@@ -30,6 +30,27 @@ Key areas of code contributions include:
 - [New tests](https://github.com/arrayfire/arrayfire/labels/test)
 - New examples!
 
+## Running the CI Checks Locally ##
+
+Each CPU check that CI runs is a job of `.github/scripts/ci.sh` (`--list` shows them). With
+Docker, a Linux job runs in the same Ubuntu image that CI uses:
+
+    .github/scripts/ci.sh --docker lint
+    .github/scripts/ci.sh --docker docs
+    .github/scripts/ci.sh --docker linux-gcc-openblas
+
+The build tree goes to `build/<preset>` and test results to `build/<preset>/junit.xml`. Set
+`CMAKE_BUILD_PARALLEL_LEVEL` to limit build parallelism.
+
+Without `--docker`, `ci.sh` first installs the job's packages with apt, Homebrew or vcpkg;
+`--no-deps` skips that. The build itself is a CMake workflow preset, which needs CMake 3.25 or
+newer, for example:
+
+    cmake --workflow --preset ci-linux-gcc-openblas
+
+`lint` checks the formatting of the lines you changed since the default branch with
+clang-format 15.0.7.
+
 ##ArrayFire Based Projects##
 
 You can also contribute to ArrayFire by helping out projects that use ArrayFire! For our part, in addition to the ArrayFire library we are also in the process of adding native bindings for numerous language. We currently support
