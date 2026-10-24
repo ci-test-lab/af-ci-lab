@@ -1,0 +1,122 @@
+name: CPU
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check formatting of the changed lines
+        env:
+          AF_LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: .github/scripts/ci.sh --docker lint
+
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the documentation
+        run: .github/scripts/ci.sh --docker docs
+
+  linux:
+    name: ${{ matrix.job }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [linux-gcc-openblas, linux-clang-openblas]
+    env:
+      AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ccache
+          key: ccache-${{ matrix.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.job }}-
+      - name: Build and test
+        run: .github/scripts/ci.sh --docker ${{ matrix.job }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: junit-${{ matrix.job }}
+          path: build/ci-${{ matrix.job }}/junit.xml
+          if-no-files-found: ignore
+
+  macos:
+    name: macos-arm64-clang-accelerate
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ccache
+          key: ccache-macos-arm64-clang-accelerate-${{ github.sha }}
+          restore-keys: ccache-macos-arm64-clang-accelerate-
+      - name: Build and test
+        run: .github/scripts/ci.sh macos-arm64-clang-accelerate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: junit-macos-arm64-clang-accelerate
+          path: build/ci-macos-arm64-clang-accelerate/junit.xml
+          if-no-files-found: ignore
+
+  windows:
+    name: windows-msvc-openblas
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**') }}
+      - name: Build and test
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}\vcpkg
+        run: .github/scripts/ci.sh windows-msvc-openblas
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: junit-windows-msvc-openblas
+          path: build/ci-windows-msvc-openblas/junit.xml
+          if-no-files-found: ignore
