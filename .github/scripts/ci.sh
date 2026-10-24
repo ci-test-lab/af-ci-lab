@@ -51,12 +51,19 @@ cd "$root"
 
 if [[ -n $docker ]]; then
   [[ $image != - ]] || { echo "$job runs on the host, not in a container" >&2; exit 2; }
+  # ccache lives in a named volume, or in a host directory (AF_CI_CCACHE_DIR)
+  # that CI can save between runs.
+  ccache=${AF_CI_CCACHE_VOLUME:-arrayfire-ccache}
+  if [[ -n ${AF_CI_CCACHE_DIR:-} ]]; then
+    mkdir -p "$AF_CI_CCACHE_DIR"
+    ccache=$(cd "$AF_CI_CCACHE_DIR" && pwd)
+  fi
   # The repository is mounted, so build trees land in build/ as usual; give them
   # back to the calling user afterwards.
   # shellcheck disable=SC2086
   exec docker run --rm ${AF_CI_DOCKER_ARGS:-} \
     -v "$root:/src" -w /src \
-    -v "${AF_CI_CCACHE_VOLUME:-arrayfire-ccache}:/ccache" -e CCACHE_DIR=/ccache \
+    -v "$ccache:/ccache" -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
     -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE \
     "$image" bash -c '.github/scripts/ci.sh "$1"; rc=$?
