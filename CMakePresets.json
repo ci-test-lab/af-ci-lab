@@ -320,6 +320,45 @@
       }
     },
     {
+      "name": "ci-linux-cuda",
+      "inherits": "ci-linux",
+      "description": "CUDA backend with GCC, for compute capabilities 7.5 and 8.9. Builds without a GPU",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CUDA_COMPILER": "/usr/local/cuda/bin/nvcc",
+        "AF_BUILD_CPU": "OFF",
+        "AF_BUILD_CUDA": "ON",
+        "AF_WITH_CUDNN": "OFF",
+        "CUDA_architecture_build_targets": "7.5;8.9"
+      }
+    },
+    {
+      "name": "ci-linux-opencl",
+      "inherits": "ci-linux",
+      "description": "OpenCL backend with GCC, using OpenBLAS, LAPACKE and FFTW for its CPU fallbacks",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "AF_BUILD_CPU": "OFF",
+        "AF_BUILD_OPENCL": "ON"
+      }
+    },
+    {
+      "name": "ci-linux-oneapi",
+      "inherits": "ci-linux",
+      "description": "oneAPI backend with the Intel oneAPI compiler and oneMKL. Run it after sourcing the oneAPI setvars.sh script",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "icx",
+        "CMAKE_CXX_COMPILER": "icpx",
+        "CMAKE_SYCL_COMPILER": "icpx",
+        "CMAKE_SYCL_COMPILE_OBJECT": "ccache <CMAKE_SYCL_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -o <OBJECT> -c <SOURCE>",
+        "AF_BUILD_CPU": "OFF",
+        "AF_BUILD_ONEAPI": "ON",
+        "AF_COMPUTE_LIBRARY": "Intel-MKL"
+      }
+    },
+    {
       "name": "ci-macos-arm64-clang-accelerate",
       "inherits": "ci",
       "condition": {
@@ -381,6 +420,18 @@
     {
       "name": "ci-linux-icx-mkl",
       "configurePreset": "ci-linux-icx-mkl"
+    },
+    {
+      "name": "ci-linux-cuda",
+      "configurePreset": "ci-linux-cuda"
+    },
+    {
+      "name": "ci-linux-opencl",
+      "configurePreset": "ci-linux-opencl"
+    },
+    {
+      "name": "ci-linux-oneapi",
+      "configurePreset": "ci-linux-oneapi"
     },
     {
       "name": "ci-macos-arm64-clang-accelerate",
@@ -523,6 +574,45 @@
         {
           "type": "test",
           "name": "ci-linux-icx-mkl"
+        }
+      ]
+    },
+    {
+      "name": "ci-linux-cuda",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci-linux-cuda"
+        },
+        {
+          "type": "build",
+          "name": "ci-linux-cuda"
+        }
+      ]
+    },
+    {
+      "name": "ci-linux-opencl",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci-linux-opencl"
+        },
+        {
+          "type": "build",
+          "name": "ci-linux-opencl"
+        }
+      ]
+    },
+    {
+      "name": "ci-linux-oneapi",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci-linux-oneapi"
+        },
+        {
+          "type": "build",
+          "name": "ci-linux-oneapi"
         }
       ]
     },
