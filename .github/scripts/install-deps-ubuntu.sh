@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Installs the packages for an ArrayFire CPU build, the docs or the lint check
-# on Ubuntu 22.04, 24.04 or 26.04. Runs as root or through sudo.
+# Installs the packages for an ArrayFire build, the docs or the lint check on
+# Ubuntu 22.04, 24.04 or 26.04. Runs as root or through sudo.
 #
 # Usage: install-deps-ubuntu.sh [--compiler gcc|clang|icx] [--blas openblas|mkl]
+#                               [--cuda <version>] [--opencl]
 #                               [--cmake <version>] [--docs] [--lint]
 set -euo pipefail
 
@@ -15,6 +16,8 @@ declare -A cmake_sha256=(
 
 compiler=
 blas=
+cuda_version=
+opencl=
 cmake_version=
 docs=
 lint=
@@ -22,6 +25,8 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --compiler) compiler=$2; shift 2 ;;
     --blas) blas=$2; shift 2 ;;
+    --cuda) cuda_version=$2; shift 2 ;;
+    --opencl) opencl=1; shift ;;
     --cmake) cmake_version=$2; shift 2 ;;
     --docs) docs=1; shift ;;
     --lint) lint=1; shift ;;
@@ -52,7 +57,8 @@ case $blas in
   openblas) packages+=(libopenblas-dev) ;;
   *) echo "unknown BLAS: $blas" >&2; exit 2 ;;
 esac
-[[ $compiler == icx || $blas == mkl ]] && packages+=(gnupg)
+[[ -n $opencl ]] && packages+=(ocl-icd-opencl-dev opencl-headers)
+[[ $compiler == icx || $blas == mkl || -n $cuda_version ]] && packages+=(gnupg)
 
 $sudo apt-get update -q
 $sudo apt-get install -y -q --no-install-recommends "${packages[@]}"
@@ -67,6 +73,26 @@ if [[ $compiler == icx || $blas == mkl ]]; then
   [[ $compiler == icx ]] && oneapi_packages+=("intel-oneapi-compiler-dpcpp-cpp-$oneapi_version")
   $sudo apt-get update -q
   $sudo apt-get install -y -q "${oneapi_packages[@]}"
+fi
+
+if [[ -n $cuda_version ]]; then
+  # The toolkit pieces ArrayFire's CUDA backend builds against; no driver is needed.
+  # shellcheck disable=SC1091
+  repo=ubuntu$(. /etc/os-release && echo "${VERSION_ID//./}")
+  keyring=/usr/share/keyrings/cuda-archive-keyring.gpg
+  curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/$repo/x86_64/3bf863cc.pub" \
+    | gpg --dearmor | $sudo tee $keyring > /dev/null
+  echo "deb [signed-by=$keyring] https://developer.download.nvidia.com/compute/cuda/repos/$repo/x86_64/ /" \
+    | $sudo tee /etc/apt/sources.list.d/cuda.list > /dev/null
+  v=${cuda_version//./-}
+  $sudo apt-get update -q
+  $sudo apt-get install -y -q --no-install-recommends \
+    "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" "cuda-cccl-$v" \
+    "cuda-driver-dev-$v" "cuda-profiler-api-$v" "cuda-nvtx-$v" "cuda-nvprune-$v" \
+    "libcublas-dev-$v" "libcufft-dev-$v" "libcusolver-dev-$v" "libcusparse-dev-$v" \
+    "libcurand-dev-$v" "libnvjitlink-$v"
+  $sudo ln -sfn "/usr/local/cuda-$cuda_version" /usr/local/cuda
+  /usr/local/cuda/bin/nvcc --version | tail -n 2
 fi
 
 # Downloads a release archive, checks its SHA-256 and unpacks it into /opt/<name>.
