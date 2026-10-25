@@ -35,6 +35,10 @@ on:
         description: GPU architectures to build for
         default: '7.5;8.9'
         type: string
+    outputs:
+      test-summary:
+        description: The test run's summary line; empty when the test job did not run
+        value: ${{ jobs.test.outputs.summary }}
 
 permissions:
   contents: read
@@ -104,6 +108,8 @@ jobs:
       cancel-in-progress: false
     env:
       AF_CI_SOURCE_DIR: ${{ github.workspace }}/under-test
+    outputs:
+      summary: ${{ steps.summary.outputs.line }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,16 +123,19 @@ jobs:
       - name: Test
         run: .github/scripts/ci.sh --docker linux-cuda-gpu-test
       - name: Summarize the results
+        id: summary
         if: ${{ !cancelled() }}
         run: |
           log=$AF_CI_SOURCE_DIR/build/ci-linux-cuda-gpu/ctest.log
+          line="The tests did not run."
+          [[ -f $log ]] && line=$(grep -m1 -E 'tests passed' "$log" || echo "The test run did not finish.")
+          echo "line=$line" >> "$GITHUB_OUTPUT"
           {
             echo "### CUDA $AF_CI_CUDA_VERSION tests of $SHA"
+            echo "$line"
             if [[ -f $log ]]; then
-              grep -E 'tests passed|Total Test time' "$log" || echo "The test run did not finish."
+              grep -E 'Total Test time' "$log" || true
               sed -n '/The following tests FAILED/,$p' "$log" | grep -E '^\s+[0-9]+ - ' || true
-            else
-              echo "The tests did not run."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
