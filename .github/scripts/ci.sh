@@ -71,6 +71,36 @@ if [[ -n $docker ]]; then
     mkdir -p "$AF_CI_CCACHE_DIR"
     ccache=$(cd "$AF_CI_CCACHE_DIR" && pwd)
   fi
+  # Ninja's default (CPUs + 2) can run out of memory. Unless CMAKE_BUILD_PARALLEL_LEVEL
+  # is set, run as many compiles as fit the container's --memory limit, or 3/4 of
+  # Docker's memory without one: about 2.5 GiB each for SYCL and 0.75 GiB for the
+  # rest. Never more than the CPUs, nor 8, the most every job was measured with.
+  if [[ -z ${CMAKE_BUILD_PARALLEL_LEVEL:-} ]]; then
+    read -r cpus mib <<< "$(docker info --format '{{.NCPU}} {{.MemTotal}}')"
+    mib=$((mib * 3 / 4 / 1048576))
+    memory="3/4 of Docker's memory"
+    args=" ${AF_CI_DOCKER_ARGS:-} "
+    if [[ ${args,,} =~ [[:space:]](--memory|-m)[=[:space:]]*([0-9]+)([kmg]?)b?[[:space:]] ]]; then
+      case ${BASH_REMATCH[3]} in
+        g) mib=$((BASH_REMATCH[2] * 1024)) ;;
+        m) mib=${BASH_REMATCH[2]} ;;
+        k) mib=$((BASH_REMATCH[2] / 1024)) ;;
+        *) mib=$((BASH_REMATCH[2] / 1048576)) ;;
+      esac
+      memory="the --memory limit"
+    fi
+    [[ $args =~ [[:space:]]--cpus[=[:space:]]*([0-9]+) ]] && cpus=${BASH_REMATCH[1]}
+    per_compile=768 per_compile_gib=0.75
+    [[ $job == linux-oneapi ]] && per_compile=2560 per_compile_gib=2.5
+    jobs=$((mib / per_compile))
+    ((jobs > cpus)) && jobs=$cpus
+    ((jobs > 8)) && jobs=8
+    ((jobs < 1)) && jobs=1
+    export CMAKE_BUILD_PARALLEL_LEVEL=$jobs
+    echo "Building with $jobs parallel jobs: $mib MiB ($memory) / $per_compile_gib GiB" \
+      "per compile = $((mib / per_compile)), $cpus CPUs, at most 8." \
+      "Set CMAKE_BUILD_PARALLEL_LEVEL to override."
+  fi
   # The repository is mounted, so build trees land in build/ as usual; give them
   # and a ccache directory back to the calling user afterwards. The GPU jobs
   # mount this repository read-only at /ci and the source tree under test at /src.
