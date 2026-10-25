@@ -20,6 +20,9 @@ linux-clang-openblas          ubuntu:24.04  --compiler clang --blas openblas
 linux-icx-mkl                 ubuntu:24.04  --compiler icx --blas mkl
 linux-gcc-openblas-floor      ubuntu:22.04  --compiler gcc --blas openblas --cmake $floor_cmake
 linux-gcc-openblas-next       ubuntu:26.04  --compiler gcc --blas openblas
+linux-cuda                    ubuntu:24.04  --compiler gcc --cuda 12.9
+linux-opencl                  ubuntu:24.04  --compiler gcc --blas openblas --opencl
+linux-oneapi                  ubuntu:24.04  --compiler icx --blas mkl --opencl --oneapi 2025.3
 macos-arm64-clang-accelerate  -
 windows-msvc-openblas         -
 "
@@ -88,7 +91,7 @@ case $job in
   lint)
     "$scripts/lint.sh"
     ;;
-  linux-icx-mkl)
+  linux-icx-mkl|linux-oneapi)
     set +eu
     # shellcheck disable=SC1091
     source /opt/intel/oneapi/setvars.sh --force > /dev/null
