@@ -252,7 +252,7 @@ def main(command):
         if result == "success" and summary:
             state, text = "success", f"passed: {summary}"
         elif result == "success":
-            state, text = "error", "the GPU test job did not run (no GPU runner configured?)"
+            state, text = "error", "did not run: gpu.yml's test job was skipped (no GPU runner configured?)"
         elif result == "failure":
             state, text = "failure", f"failed: {summary or 'the build or the test job failed'}"
         elif result == "cancelled":
