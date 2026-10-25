@@ -75,7 +75,8 @@ if [[ -n $docker ]]; then
   # is set, run as many compiles as fit the container's --memory limit, or 3/4 of
   # Docker's memory without one: about 2.5 GiB each for SYCL and 0.75 GiB for the
   # rest. Never more than the CPUs, nor 8, the most every job was measured with.
-  if [[ -z ${CMAKE_BUILD_PARALLEL_LEVEL:-} ]]; then
+  # The GPU test job compiles nothing.
+  if [[ -z ${CMAKE_BUILD_PARALLEL_LEVEL:-} && $job != linux-cuda-gpu-test ]]; then
     read -r cpus mib <<< "$(docker info --format '{{.NCPU}} {{.MemTotal}}')"
     mib=$((mib * 3 / 4 / 1048576))
     memory="3/4 of Docker's memory"
