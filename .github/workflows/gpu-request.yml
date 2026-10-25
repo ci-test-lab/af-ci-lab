@@ -1,0 +1,125 @@
+name: GPU test requests
+
+# A "/gpu-tests" comment on a pull request asks for the GPU tests of its head
+# commit. This workflow runs from the default branch, so neither the pull request
+# nor the Claude App can change it. gpu-request.py decides whether the request is
+# allowed and pins the head SHA; gpu.yml then builds and tests exactly that commit,
+# and the result goes to the gpu-tests commit status and a comment. Nothing from
+# the pull request is checked out or run here.
+on:
+  issue_comment:
+    types: [created]
+
+# Request runs are named "/gpu-tests on #<number> by <login>"; the quotas look for that.
+run-name: >-
+  ${{ startsWith(github.event.comment.body, '/gpu-tests') && '/gpu-tests' || 'comment' }}
+  on #${{ github.event.issue.number }} by ${{ github.event.comment.user.login }}
+
+permissions: {}
+
+jobs:
+  decide:
+    if: >-
+      github.event.issue.pull_request && startsWith(github.event.comment.body, '/gpu-tests') &&
+      github.event.comment.user.login != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+      sha: ${{ steps.decide.outputs.sha }}
+      cuda: ${{ steps.decide.outputs.cuda }}
+      reply: ${{ steps.decide.outputs.reply }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: decide
+        name: Decide on the request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AF_CI_GPU_TESTS: ${{ vars.AF_CI_GPU_TESTS }}
+          AF_CI_CLAUDE_BOT: ${{ vars.AF_CI_CLAUDE_BOT }}
+          AF_CI_GPU_AI_PER_PR_DAY: ${{ vars.AF_CI_GPU_AI_PER_PR_DAY }}
+          AF_CI_GPU_AI_PER_DAY: ${{ vars.AF_CI_GPU_AI_PER_DAY }}
+        run: python3 .github/scripts/gpu-request.py decide
+
+  reply:
+    needs: decide
+    if: needs.decide.outputs.decision == 'reply'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reply on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLY: ${{ needs.decide.outputs.reply }}
+        run: python3 .github/scripts/gpu-request.py reply
+
+  # Its success marks an accepted request in the run history, which the quotas count.
+  accepted:
+    needs: decide
+    if: needs.decide.outputs.decision == 'accept'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set the pending status and reply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.decide.outputs.sha }}
+          CUDA: ${{ needs.decide.outputs.cuda }}
+          REPLY: ${{ needs.decide.outputs.reply }}
+        run: python3 .github/scripts/gpu-request.py accepted
+
+  gpu:
+    needs: [decide, accepted]
+    if: needs.decide.outputs.decision == 'accept'
+    # One request per pull request at a time; later ones wait.
+    concurrency:
+      group: gpu-request-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    uses: ./.github/workflows/gpu.yml
+    with:
+      sha: ${{ needs.decide.outputs.sha }}
+      cuda: ${{ needs.decide.outputs.cuda }}
+
+  report:
+    needs: [decide, gpu]
+    if: always() && needs.decide.outputs.decision == 'accept'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.decide.outputs.sha }}
+          CUDA: ${{ needs.decide.outputs.cuda }}
+          RESULT: ${{ needs.gpu.result }}
+          SUMMARY: ${{ needs.gpu.outputs.test-summary }}
+        run: python3 .github/scripts/gpu-request.py report
