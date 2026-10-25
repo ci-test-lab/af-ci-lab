@@ -1,0 +1,140 @@
+name: GPU tests
+
+# Builds one commit with CUDA on a standard runner, then runs ArrayFire's CUDA
+# tests on a GPU runner. The scripts and build settings come from the ref this
+# workflow runs on; only the source tree comes from the requested commit. Callers
+# must run from a trusted ref, never from a pull request.
+# The jobs run only when the repository variable AF_CI_GPU_TESTS is 'true'; the
+# test job also needs AF_CI_GPU_RUNNER, the label of the GPU runner.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character SHA of the commit to test
+        required: true
+        type: string
+      cuda:
+        description: CUDA toolkit version
+        default: '12.9'
+        type: string
+      cuda-architectures:
+        description: GPU architectures to build for
+        default: '7.5;8.9'
+        type: string
+  workflow_call:
+    inputs:
+      sha:
+        description: Full 40-character SHA of the commit to test
+        required: true
+        type: string
+      cuda:
+        description: CUDA toolkit version
+        default: '12.9'
+        type: string
+      cuda-architectures:
+        description: GPU architectures to build for
+        default: '7.5;8.9'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-tests-${{ inputs.sha }}-cuda-${{ inputs.cuda }}
+  cancel-in-progress: false
+
+env:
+  SHA: ${{ inputs.sha }}
+  AF_CI_CUDA_VERSION: ${{ inputs.cuda }}
+  AF_CI_CUDA_ARCHITECTURES: ${{ inputs.cuda-architectures }}
+
+jobs:
+  build:
+    name: build (CUDA ${{ inputs.cuda }})
+    if: vars.AF_CI_GPU_TESTS == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      AF_CI_SOURCE_DIR: ${{ github.workspace }}/under-test
+      AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 1G
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+    steps:
+      - name: Check the inputs
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          [[ $SHA =~ ^[0-9a-fA-F]{40}$ ]] ||
+            { echo "::error::sha must be a full 40-character commit SHA, not '$SHA'"; exit 1; }
+          [[ $AF_CI_CUDA_VERSION =~ ^[0-9]+\.[0-9]+$ ]] ||
+            { echo "::error::cuda must be a version like 12.9, not '$AF_CI_CUDA_VERSION'"; exit 1; }
+          [[ $AF_CI_CUDA_ARCHITECTURES =~ ^[0-9.\;+A-Za-z]+$ ]] ||
+            { echo "::error::cuda-architectures must be a list like 7.5;8.9"; exit 1; }
+          [[ $EVENT != pull_request* ]] ||
+            { echo "::error::the scripts would come from a pull request; call this from a trusted ref"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the commit under test
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ccache
+          key: ccache-gpu-cuda-${{ inputs.cuda }}-${{ inputs.sha }}
+          restore-keys: ccache-gpu-cuda-${{ inputs.cuda }}-
+      - name: Build
+        run: .github/scripts/ci.sh --docker linux-cuda-gpu-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !env.ACT }}
+        with:
+          path: under-test/build/ci-linux-cuda-gpu.tar.zst
+          archive: false
+          retention-days: 3
+          if-no-files-found: error
+
+  test:
+    name: test (CUDA ${{ inputs.cuda }})
+    needs: build
+    if: vars.AF_CI_GPU_TESTS == 'true' && vars.AF_CI_GPU_RUNNER != ''
+    runs-on: ${{ vars.AF_CI_GPU_RUNNER }}
+    timeout-minutes: 60
+    # One GPU job at a time, across all runs.
+    concurrency:
+      group: gpu-runner
+      cancel-in-progress: false
+    env:
+      AF_CI_SOURCE_DIR: ${{ github.workspace }}/under-test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the commit under test
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-linux-cuda-gpu.tar.zst
+          path: under-test/build
+      - name: Test
+        run: .github/scripts/ci.sh --docker linux-cuda-gpu-test
+      - name: Summarize the results
+        if: ${{ !cancelled() }}
+        run: |
+          log=$AF_CI_SOURCE_DIR/build/ci-linux-cuda-gpu/ctest.log
+          {
+            echo "### CUDA $AF_CI_CUDA_VERSION tests of $SHA"
+            if [[ -f $log ]]; then
+              grep -E 'tests passed|Total Test time' "$log" || echo "The test run did not finish."
+              sed -n '/The following tests FAILED/,$p' "$log" | grep -E '^\s+[0-9]+ - ' || true
+            else
+              echo "The tests did not run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: gpu-test-results-cuda-${{ inputs.cuda }}
+          path: |
+            under-test/build/ci-linux-cuda-gpu/junit.xml
+            under-test/build/ci-linux-cuda-gpu/ctest.log
+            under-test/build/ci-linux-cuda-gpu/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
