@@ -78,6 +78,7 @@ fi
 
 if [[ -n $cuda_version ]]; then
   # The toolkit pieces ArrayFire's CUDA backend builds against; no driver is needed.
+  # CCCL comes with cudart-dev, as cuda-cccl or (from 13.3) cccl.
   # shellcheck disable=SC1091
   repo=ubuntu$(. /etc/os-release && echo "${VERSION_ID//./}")
   keyring=/usr/share/keyrings/cuda-archive-keyring.gpg
@@ -88,7 +89,7 @@ if [[ -n $cuda_version ]]; then
   v=${cuda_version//./-}
   $sudo apt-get update -q
   $sudo apt-get install -y -q --no-install-recommends \
-    "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" "cuda-cccl-$v" \
+    "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" \
     "cuda-driver-dev-$v" "cuda-profiler-api-$v" "cuda-nvtx-$v" "cuda-nvprune-$v" \
     "libcublas-dev-$v" "libcufft-dev-$v" "libcusolver-dev-$v" "libcusparse-dev-$v" \
     "libcurand-dev-$v" "libnvjitlink-$v"
