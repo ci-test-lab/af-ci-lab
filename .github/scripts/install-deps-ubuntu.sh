@@ -3,7 +3,7 @@
 # Ubuntu 22.04, 24.04 or 26.04. Runs as root or through sudo.
 #
 # Usage: install-deps-ubuntu.sh [--compiler gcc|clang|icx] [--blas openblas|mkl]
-#                               [--cuda <version>] [--opencl]
+#                               [--oneapi <version>] [--cuda <version>] [--opencl]
 #                               [--cmake <version>] [--docs] [--lint]
 set -euo pipefail
 
@@ -25,6 +25,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --compiler) compiler=$2; shift 2 ;;
     --blas) blas=$2; shift 2 ;;
+    --oneapi) oneapi_version=$2; shift 2 ;;
     --cuda) cuda_version=$2; shift 2 ;;
     --opencl) opencl=1; shift ;;
     --cmake) cmake_version=$2; shift 2 ;;
