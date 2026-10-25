@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Runs one CPU CI job: installs its dependencies, then runs its CMake workflow
+# Runs one CI job: installs its dependencies, then runs its CMake workflow
 # preset or check. CI runs it inside the job's container image; --docker runs
 # it the same way in a fresh local container.
+#
+# The linux-cuda-gpu-* jobs build and test the source tree in AF_CI_SOURCE_DIR
+# (default: this repository) with this repository's scripts, so they can test
+# any commit. AF_CI_CUDA_VERSION (default 12.9) and AF_CI_CUDA_ARCHITECTURES
+# (default 7.5;8.9) select the toolkit and the GPU architectures.
 #
 # Usage: ci.sh [--docker] [--no-deps] <job>
 #        ci.sh --list
@@ -10,6 +15,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 scripts=$root/.github/scripts
 floor_cmake=3.16.3
+cuda_version=${AF_CI_CUDA_VERSION:-12.9}
 
 # job, container image, arguments for the dependency script
 jobs="
@@ -23,6 +29,8 @@ linux-gcc-openblas-next       ubuntu:26.04  --compiler gcc --blas openblas
 linux-cuda                    ubuntu:24.04  --compiler gcc --cuda 12.9
 linux-opencl                  ubuntu:24.04  --compiler gcc --blas openblas --opencl
 linux-oneapi                  ubuntu:24.04  --compiler icx --blas mkl --opencl --oneapi 2025.3
+linux-cuda-gpu-build          ubuntu:24.04  --compiler gcc --cuda $cuda_version
+linux-cuda-gpu-test           ubuntu:24.04  --compiler gcc --cuda $cuda_version
 macos-arm64-clang-accelerate  -
 windows-msvc-openblas         -
 "
@@ -51,6 +59,8 @@ spec=$(echo "$jobs" | awk -v job="$job" '$1 == job')
 read -r _ image deps_args <<< "$spec"
 
 cd "$root"
+source=$(cd "${AF_CI_SOURCE_DIR:-$root}" && pwd)
+gpu_build=$source/build/ci-linux-cuda-gpu
 
 if [[ -n $docker ]]; then
   [[ $image != - ]] || { echo "$job runs on the host, not in a container" >&2; exit 2; }
@@ -62,16 +72,29 @@ if [[ -n $docker ]]; then
     ccache=$(cd "$AF_CI_CCACHE_DIR" && pwd)
   fi
   # The repository is mounted, so build trees land in build/ as usual; give them
-  # back to the calling user afterwards.
+  # and a ccache directory back to the calling user afterwards. The GPU jobs
+  # mount this repository read-only at /ci and the source tree under test at /src.
+  mounts=(-v "$root:/src")
+  script=.github/scripts/ci.sh
+  if [[ $job == linux-cuda-gpu-* ]]; then
+    mounts=(-v "$root:/ci:ro" -v "$source:/src" -e AF_CI_SOURCE_DIR=/src
+            -e AF_CI_CUDA_VERSION -e AF_CI_CUDA_ARCHITECTURES)
+    script=/ci/.github/scripts/ci.sh
+    [[ $job == *-test ]] && mounts+=(--gpus all)
+  fi
   # shellcheck disable=SC2086
-  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} \
-    -v "$root:/src" -w /src \
+  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" -w /src \
     -v "$ccache:/ccache" -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
     -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE \
-    "$image" bash -c '.github/scripts/ci.sh "$1"; rc=$?
-      chown -R "$2" build docs/details/examples.dox 2> /dev/null; exit $rc' \
-    bash "$job" "$(id -u):$(id -g)"
+    "$image" bash -c '"$1" "$2"; rc=$?
+      chown -R "$3" build docs/details/examples.dox ${4:+/ccache} 2> /dev/null; exit $rc' \
+    bash "$script" "$job" "$(id -u):$(id -g)" "${AF_CI_CCACHE_DIR:-}"
+fi
+
+if [[ $job == linux-cuda-gpu-test ]] && ! nvidia-smi; then
+  echo "No NVIDIA GPU is visible, and $job needs one (docker run --gpus all)" >&2
+  exit 1
 fi
 
 if [[ $job == windows-* ]]; then
@@ -112,6 +135,24 @@ case $job in
     # The distribution's ctest runs the same tests and can write JUnit.
     OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$build" \
       -j 2 --output-on-failure --no-tests=error --output-junit "$root/$build/junit.xml"
+    ;;
+  linux-cuda-gpu-build)
+    cmake -S "$source" -B "$gpu_build" -G Ninja -C "$scripts/linux-cuda-gpu.cmake" \
+      "-DCUDA_architecture_build_targets=${AF_CI_CUDA_ARCHITECTURES:-7.5;8.9}"
+    cmake --build "$gpu_build"
+    # The test job gets what the tests need, to unpack at the same path: test
+    # programs, shared libraries, CTest files and test data.
+    (cd "$source" && find "${gpu_build#"$source/"}" \( -name CMakeFiles -o -name .git \) -prune -o \
+      \( -name CTestTestfile.cmake -o -name '*.so*' -o -path '*/test/*' -type f -perm -u+x \
+         -o -path '*/extern/af_test_data-src/*' \) \( -type f -o -type l \) -print) |
+      tar -C "$source" --zstd -cf "$gpu_build.tar.zst" -T -
+    ls -l "$gpu_build.tar.zst"
+    ;;
+  linux-cuda-gpu-test)
+    [[ -d $gpu_build ]] || tar -C "$source" --zstd -xf "$gpu_build.tar.zst"
+    OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$gpu_build" \
+      --timeout 900 --output-on-failure --no-tests=error \
+      --output-junit "$gpu_build/junit.xml" 2>&1 | tee "$gpu_build/ctest.log"
     ;;
   *)
     cmake --workflow --preset "ci-$job"

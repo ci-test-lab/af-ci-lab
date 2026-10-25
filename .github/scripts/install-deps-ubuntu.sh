@@ -59,6 +59,7 @@ case $blas in
   *) echo "unknown BLAS: $blas" >&2; exit 2 ;;
 esac
 [[ -n $opencl ]] && packages+=(ocl-icd-opencl-dev opencl-headers)
+[[ -n $cuda_version ]] && packages+=(zstd)
 [[ $compiler == icx || $blas == mkl || -n $cuda_version ]] && packages+=(gnupg)
 
 $sudo apt-get update -q
