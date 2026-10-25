@@ -101,7 +101,9 @@ jobs:
     needs: build
     if: vars.AF_CI_GPU_TESTS == 'true' && vars.AF_CI_GPU_RUNNER != ''
     runs-on: ${{ vars.AF_CI_GPU_RUNNER }}
-    timeout-minutes: 60
+    # A run took up to 15 min on an RTX 4070 Ti: 3.5–10 min of packages, 4 min of tests.
+    # A T4 runs the tests slower.
+    timeout-minutes: 45
     # One GPU job at a time, across all runs.
     concurrency:
       group: gpu-runner
