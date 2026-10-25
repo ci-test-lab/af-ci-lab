@@ -1,0 +1,52 @@
+name: Accelerator builds
+
+# Compile-only builds of the CUDA, OpenCL and oneAPI backends; no GPU is needed.
+# They run only when the repository variable AF_CI_ACCELERATOR_BUILDS is 'true'.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: ${{ matrix.job }}
+    if: vars.AF_CI_ACCELERATOR_BUILDS == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: linux-cuda
+            timeout: 90
+          - job: linux-opencl
+            timeout: 60
+          - job: linux-oneapi
+            timeout: 150
+    env:
+      AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 1G
+      # The heaviest compiles (SYCL) take up to 2.5 GB each; four in parallel fit a
+      # 4-vCPU, 16 GB runner.
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ vars.AF_CI_BUILD_PARALLEL_LEVEL || 4 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ccache
+          key: ccache-${{ matrix.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.job }}-
+      - name: Build
+        run: .github/scripts/ci.sh --docker ${{ matrix.job }}
