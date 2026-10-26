@@ -7,7 +7,8 @@
 # repository) with this repository's scripts and CI settings, so it can test any
 # commit. For the linux-cuda-gpu-* jobs, AF_CI_CUDA_VERSION (default 12.9) and
 # AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
-# architectures.
+# architectures. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
+# tree's tracked files without .git instead of mounting the tree itself.
 #
 # Usage: ci.sh [--docker] [--no-deps] <job>
 #        ci.sh --list
@@ -63,6 +64,10 @@ read -r _ image deps_args <<< "$spec"
 cd "$root"
 source=$(cd "${AF_CI_SOURCE_DIR:-$root}" && pwd)
 gpu_build=$source/build/ci-linux-cuda-gpu
+if [[ -n ${AF_CI_CLEAN_EXPORT:-} && -z $docker ]]; then
+  echo "AF_CI_CLEAN_EXPORT needs --docker: a build on the host could reach the tree's credentials" >&2
+  exit 2
+fi
 
 if [[ -n $docker ]]; then
   [[ $image != - ]] || { echo "$job runs on the host, not in a container" >&2; exit 2; }
@@ -104,6 +109,27 @@ if [[ -n $docker ]]; then
       "per compile = $((mib / per_compile)), $cpus CPUs, at most 8." \
       "Set CMAKE_BUILD_PARALLEL_LEVEL to override."
   fi
+  # A working tree that may hold credentials, such as the one an agent edits and
+  # pushes from, is never mounted. The build gets a copy of its tracked files
+  # without .git (no untracked files either), in a new directory under
+  # AF_CI_EXPORT_DIR, so it can neither read the tree's git config nor change the
+  # tree. The lint job gets the diff of the changed lines, computed here.
+  lint_diff=()
+  if [[ -n ${AF_CI_CLEAN_EXPORT:-} ]]; then
+    export_dir=$(mktemp -d "${AF_CI_EXPORT_DIR:-${TMPDIR:-/tmp}}/arrayfire-ci.XXXXXX")
+    mkdir "$export_dir/src"
+    git --no-optional-locks -C "$source" ls-files -z --cached |
+      (cd "$source" && while IFS= read -r -d '' file; do
+         if [[ -e $file || -L $file ]]; then printf '%s\0' "$file"; fi
+       done) |
+      tar -C "$source" --null --no-recursion -T - -cf - | tar -C "$export_dir/src" -xf -
+    if [[ $job == lint ]]; then
+      (cd "$source" && "$scripts/lint.sh" --diff) > "$export_dir/lint.diff"
+      lint_diff=(-v "$export_dir/lint.diff:/lint.diff:ro" -e AF_LINT_DIFF=/lint.diff)
+    fi
+    echo "Building a copy of $source without .git; the results stay in $export_dir/src"
+    source=$export_dir/src
+  fi
   # The repository is mounted, so build trees land in build/ as usual; give them
   # and a ccache directory back to the calling user afterwards. A source tree from
   # elsewhere, and always the GPU jobs' one, is mounted at /src, with this
@@ -117,7 +143,7 @@ if [[ -n $docker ]]; then
     [[ $job == *-test ]] && mounts+=(--gpus all)
   fi
   # shellcheck disable=SC2086
-  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" -w /src \
+  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" "${lint_diff[@]}" -w /src \
     -v "$ccache:/ccache" -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
     -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE \
@@ -154,7 +180,11 @@ cd "$source"
 
 case $job in
   lint)
-    "$scripts/lint.sh"
+    if [[ -n ${AF_LINT_DIFF:-} ]]; then
+      "$scripts/lint.sh" --check "$AF_LINT_DIFF"
+    else
+      "$scripts/lint.sh"
+    fi
     ;;
   linux-icx-mkl|linux-oneapi)
     set +eu
