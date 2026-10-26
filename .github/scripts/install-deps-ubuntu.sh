@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Installs the packages for an ArrayFire build, the docs or the lint check on
-# Ubuntu 22.04, 24.04 or 26.04. Runs as root or through sudo.
+# Installs the packages for an ArrayFire build, the docs, the lint check or the
+# workflow checks on Ubuntu 22.04, 24.04 or 26.04. Runs as root or through sudo.
 #
 # Usage: install-deps-ubuntu.sh [--compiler gcc|clang|icx] [--blas openblas|mkl]
 #                               [--oneapi <version>] [--cuda <version>] [--opencl]
-#                               [--cmake <version>] [--docs] [--lint]
+#                               [--cmake <version>] [--docs] [--lint] [--workflows]
 set -euo pipefail
 
 oneapi_version=2026.2
 doxygen_version=1.9.7
 doxygen_sha256=8bcb7cbdb9d8ae78d0bf65a383bc533db5232e2527ab10743f1e58cba92a7d43
+actionlint_version=1.7.9
+actionlint_sha256=233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4
+shellcheck_version=0.11.0
+shellcheck_sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
 declare -A cmake_sha256=(
   [3.16.3]=3e15dadfec8d54eda39c2f266fc1e571c1b88bf32f9d221c8a039b07234206fa
 )
@@ -21,6 +25,7 @@ opencl=
 cmake_version=
 docs=
 lint=
+workflows=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --compiler) compiler=$2; shift 2 ;;
@@ -31,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --cmake) cmake_version=$2; shift 2 ;;
     --docs) docs=1; shift ;;
     --lint) lint=1; shift ;;
+    --workflows) workflows=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -41,6 +47,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 packages=(ca-certificates curl git)
 [[ -n $lint ]] && packages+=(python3 python3-venv)
+[[ -n $workflows ]] && packages+=(python3 xz-utils)
 if [[ -n $compiler || -n $docs ]]; then
   packages+=(build-essential cmake ninja-build libboost-dev)
 fi
@@ -124,4 +131,25 @@ if [[ -n $docs ]]; then
     "$doxygen_sha256" "doxygen-$doxygen_version"
   $sudo ln -sf "/opt/doxygen-$doxygen_version/bin/doxygen" /usr/local/bin/doxygen
   echo "doxygen $(doxygen --version)"
+fi
+
+# Downloads a release archive, checks its SHA-256 and installs one program from it.
+install_program() {
+  local url=$1 sha256=$2 member=$3 tmp
+  tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/archive" "$url"
+  echo "$sha256  $tmp/archive" | sha256sum -c --quiet
+  tar -xf "$tmp/archive" -C "$tmp" "$member"
+  $sudo install -m 755 "$tmp/$member" "/usr/local/bin/${member##*/}"
+  rm -rf "$tmp"
+}
+
+if [[ -n $workflows ]]; then
+  install_program \
+    "https://github.com/rhysd/actionlint/releases/download/v$actionlint_version/actionlint_${actionlint_version}_linux_amd64.tar.gz" \
+    "$actionlint_sha256" actionlint
+  install_program \
+    "https://github.com/koalaman/shellcheck/releases/download/v$shellcheck_version/shellcheck-v$shellcheck_version.linux.x86_64.tar.xz" \
+    "$shellcheck_sha256" "shellcheck-v$shellcheck_version/shellcheck"
+  echo "actionlint $(actionlint --version | head -n 1), shellcheck $(shellcheck --version | sed -n 2p)"
 fi

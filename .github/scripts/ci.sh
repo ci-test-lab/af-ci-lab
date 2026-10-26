@@ -22,6 +22,7 @@ cuda_version=${AF_CI_CUDA_VERSION:-12.9}
 jobs="
 lint                          ubuntu:24.04  --lint
 docs                          ubuntu:24.04  --docs
+workflows                     ubuntu:24.04  --workflows
 linux-gcc-openblas            ubuntu:24.04  --compiler gcc --blas openblas
 linux-clang-openblas          ubuntu:24.04  --compiler clang --blas openblas
 linux-icx-mkl                 ubuntu:24.04  --compiler icx --blas mkl
@@ -176,6 +177,14 @@ case $job in
     # The distribution's ctest runs the same tests and can write JUnit.
     OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$build" \
       -j 2 --output-on-failure --no-tests=error --output-junit "$source/$build/junit.xml"
+    ;;
+  workflows)
+    # actionlint also runs shellcheck on the workflows' run: steps.
+    actionlint
+    shellcheck .github/scripts/*.sh
+    for test in .github/scripts/*-test.py; do
+      python3 "$test"
+    done
     ;;
   linux-cuda-gpu-build)
     cmake -S "$source" -B "$gpu_build" -G Ninja -C "$scripts/linux-cuda-gpu.cmake" \
