@@ -97,13 +97,14 @@ jobs:
         with:
           path: build/ccache
           key: ccache-gpu-cuda-${{ inputs.cuda }}-${{ inputs.sha }}
-      # Kept long enough for the test job to wait for its approval.
+      # Kept as long as the test job can wait for its approval: 30 days, after
+      # which GitHub fails the waiting job.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !env.ACT }}
         with:
           path: under-test/build/ci-linux-cuda-gpu.tar.zst
           archive: false
-          retention-days: 14
+          retention-days: 30
           if-no-files-found: error
 
   test:
