@@ -30,14 +30,42 @@ Key areas of code contributions include:
 - [New tests](https://github.com/arrayfire/arrayfire/labels/test)
 - New examples!
 
+## Running CI ##
+
+CI runs in three tiers:
+
+- **Every push** to a pull request or to `master` runs the light checks: `lint` (formatting of
+  the changed lines), `docs`, and `workflows` (actionlint and shellcheck over the workflows and
+  CI scripts).
+- **The CPU tests** (Linux with GCC and Clang, macOS and Windows) run in the merge queue and on
+  every push to `master`. A pull request shows them as passing at once ("runs in the merge
+  queue") so that it can be queued. To run them on the pull request's current head, comment
+  `/cpu-tests`, or `/cpu-tests all` to add the compile-only CUDA, OpenCL and oneAPI builds.
+  Maintainers with write access and the Claude bot can ask on any pull request. The pull
+  request's author can ask on their own pull request once the light checks have run on it.
+  Requests by anyone other than a maintainer run the Linux jobs only. The result appears as
+  the `cpu-tests` status and a comment.
+- **The GPU tests** run only on request: a maintainer with write access comments `/gpu-tests`,
+  or `/gpu-tests cuda=<major.minor>`. The CUDA build runs first. The GPU job then waits until a
+  maintainer approves it in the `gpu-tests` environment, and the result appears as the
+  `gpu-tests` status and a comment.
+
+Requests test the exact commit that is the pull request's head at that moment, with the CI
+scripts from `master`. Maintainers can also start the "CPU tests" or "GPU tests" workflow by
+hand with a commit SHA.
+
 ## Running the CI Checks Locally ##
 
-Each CPU check that CI runs is a job of `.github/scripts/ci.sh` (`--list` shows them). With
+Each check that CI runs is a job of `.github/scripts/ci.sh` (`--list` shows them). With
 Docker, a Linux job runs in the same Ubuntu image that CI uses:
 
     .github/scripts/ci.sh --docker lint
     .github/scripts/ci.sh --docker docs
+    .github/scripts/ci.sh --docker workflows
     .github/scripts/ci.sh --docker linux-gcc-openblas
+
+To test another checkout with this one's scripts and CI settings, set `AF_CI_SOURCE_DIR` to
+its directory.
 
 The build tree goes to `build/<preset>` and test results to `build/<preset>/junit.xml`. With
 `--docker`, `ci.sh` picks the build parallelism from the memory the container can use and
