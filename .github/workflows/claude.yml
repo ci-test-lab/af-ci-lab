@@ -119,5 +119,5 @@ jobs:
             ${{ steps.model.outputs.effort && format('--effort {0}', steps.model.outputs.effort) || '' }}
             --max-turns 40
             --allowedTools "Read,Glob,Grep,Edit,Write,Bash(trusted/.github/scripts/ci.sh --docker *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(gh pr view *),Bash(gh run view * --log-failed)"
-            --disallowedTools "Edit(.github/**),Read(.git/**),WebFetch,WebSearch"
+            --disallowedTools "Edit(.github/**),Edit(trusted/**),Read(.git/**),WebFetch,WebSearch"
             --append-system-prompt "Working rules for ArrayFire: Reproduce and check CI failures only with trusted/.github/scripts/ci.sh --docker <job>, run from the workspace root, for example trusted/.github/scripts/ci.sh --docker lint or trusted/.github/scripts/ci.sh --docker linux-gcc-openblas; it builds a copy of your working tree, so git add new files first. Never run the build or the tests any other way, and never edit anything under .github/. After you push, comment /cpu-tests on the pull request to run the CPU tests. Comment /gpu-tests only when the change touches GPU code (the CUDA, OpenCL or oneAPI backends) and the CPU tests are green on the pushed commit; a maintainer approves every GPU run, so don't ask for it in comments."
