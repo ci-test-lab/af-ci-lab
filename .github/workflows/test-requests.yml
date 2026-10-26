@@ -1,18 +1,21 @@
-name: GPU test requests
+name: Test requests
 
-# A "/gpu-tests" comment on a pull request asks for the GPU tests of its head
-# commit. This workflow runs from the default branch, so neither the pull request
-# nor the Claude App can change it. gpu-request.py decides whether the request is
-# allowed and pins the head SHA; gpu.yml then builds and tests exactly that commit,
-# and the result goes to the gpu-tests commit status and a comment. Nothing from
-# the pull request is checked out or run here.
+# A "/cpu-tests" or "/gpu-tests" comment on a pull request asks for the CPU or GPU
+# tests of its head commit. This workflow runs from the default branch, so neither
+# the pull request nor the Claude App can change it. test-requests.py decides
+# whether the request is allowed and pins the head SHA; cpu.yml or gpu.yml then
+# builds and tests exactly that commit, and the result goes to the cpu-tests or
+# gpu-tests commit status and a comment. Nothing from the pull request is checked
+# out or run here.
 on:
   issue_comment:
     types: [created]
 
-# Request runs are named "/gpu-tests on #<number> by <login>"; the quotas look for that.
+# Request runs are named "/cpu-tests on #<number> by <login>", or the same with
+# /gpu-tests; the GPU quotas look for that.
 run-name: >-
-  ${{ startsWith(github.event.comment.body, '/gpu-tests') && '/gpu-tests' || 'comment' }}
+  ${{ startsWith(github.event.comment.body, '/gpu-tests') && '/gpu-tests' ||
+      startsWith(github.event.comment.body, '/cpu-tests') && '/cpu-tests' || 'comment' }}
   on #${{ github.event.issue.number }} by ${{ github.event.comment.user.login }}
 
 permissions: {}
@@ -20,8 +23,9 @@ permissions: {}
 jobs:
   decide:
     if: >-
-      github.event.issue.pull_request && startsWith(github.event.comment.body, '/gpu-tests') &&
-      github.event.comment.user.login != 'github-actions[bot]'
+      github.event.issue.pull_request && github.event.comment.user.login != 'github-actions[bot]' &&
+      (startsWith(github.event.comment.body, '/cpu-tests') ||
+       startsWith(github.event.comment.body, '/gpu-tests'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -29,10 +33,14 @@ jobs:
       checks: read
       contents: read
       pull-requests: read
+      statuses: read
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
+      command: ${{ steps.decide.outputs.command }}
       sha: ${{ steps.decide.outputs.sha }}
       cuda: ${{ steps.decide.outputs.cuda }}
+      accelerators: ${{ steps.decide.outputs.accelerators }}
+      macos-windows: ${{ steps.decide.outputs.macos-windows }}
       reply: ${{ steps.decide.outputs.reply }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,10 +51,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AF_CI_GPU_TESTS: ${{ vars.AF_CI_GPU_TESTS }}
+          AF_CI_GPU_RUNNER: ${{ vars.AF_CI_GPU_RUNNER }}
+          AF_CI_ACCELERATOR_BUILDS: ${{ vars.AF_CI_ACCELERATOR_BUILDS }}
           AF_CI_CLAUDE_BOT: ${{ vars.AF_CI_CLAUDE_BOT }}
           AF_CI_GPU_AI_PER_PR_DAY: ${{ vars.AF_CI_GPU_AI_PER_PR_DAY }}
           AF_CI_GPU_AI_PER_DAY: ${{ vars.AF_CI_GPU_AI_PER_DAY }}
-        run: python3 .github/scripts/gpu-request.py decide
+        run: python3 .github/scripts/test-requests.py decide
 
   reply:
     needs: decide
@@ -64,9 +74,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPLY: ${{ needs.decide.outputs.reply }}
-        run: python3 .github/scripts/gpu-request.py reply
+        run: python3 .github/scripts/test-requests.py reply
 
-  # Its success marks an accepted request in the run history, which the quotas count.
+  # Its success marks an accepted request in the run history, which the GPU quotas count.
   accepted:
     needs: decide
     if: needs.decide.outputs.decision == 'accept'
@@ -83,15 +93,32 @@ jobs:
       - name: Set the pending status and reply
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMAND: ${{ needs.decide.outputs.command }}
           SHA: ${{ needs.decide.outputs.sha }}
           CUDA: ${{ needs.decide.outputs.cuda }}
           REPLY: ${{ needs.decide.outputs.reply }}
-        run: python3 .github/scripts/gpu-request.py accepted
+        run: python3 .github/scripts/test-requests.py accepted
+
+  cpu:
+    needs: [decide, accepted]
+    if: needs.decide.outputs.decision == 'accept' && needs.decide.outputs.command == 'cpu'
+    # One CPU run per pull request at a time; a later request waits, and one after
+    # that replaces the waiting one, which is then reported as cancelled.
+    concurrency:
+      group: cpu-request-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cpu.yml
+    with:
+      sha: ${{ needs.decide.outputs.sha }}
+      accelerators: ${{ needs.decide.outputs.accelerators == 'true' }}
+      macos-windows: ${{ needs.decide.outputs.macos-windows == 'true' }}
 
   gpu:
     needs: [decide, accepted]
-    if: needs.decide.outputs.decision == 'accept'
-    # One request per pull request at a time; later ones wait.
+    if: needs.decide.outputs.decision == 'accept' && needs.decide.outputs.command == 'gpu'
+    # One request per pull request at a time, as for the CPU tests.
     concurrency:
       group: gpu-request-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -103,7 +130,7 @@ jobs:
       cuda: ${{ needs.decide.outputs.cuda }}
 
   report:
-    needs: [decide, gpu]
+    needs: [decide, cpu, gpu]
     if: always() && needs.decide.outputs.decision == 'accept'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -118,8 +145,10 @@ jobs:
       - name: Report the result
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMAND: ${{ needs.decide.outputs.command }}
           SHA: ${{ needs.decide.outputs.sha }}
           CUDA: ${{ needs.decide.outputs.cuda }}
-          RESULT: ${{ needs.gpu.result }}
+          RESULT: >-
+            ${{ needs.decide.outputs.command == 'gpu' && needs.gpu.result || needs.cpu.result }}
           SUMMARY: ${{ needs.gpu.outputs.test-summary }}
-        run: python3 .github/scripts/gpu-request.py report
+        run: python3 .github/scripts/test-requests.py report
