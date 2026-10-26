@@ -3,10 +3,11 @@
 # preset or check. CI runs it inside the job's container image; --docker runs
 # it the same way in a fresh local container.
 #
-# The linux-cuda-gpu-* jobs build and test the source tree in AF_CI_SOURCE_DIR
-# (default: this repository) with this repository's scripts, so they can test
-# any commit. AF_CI_CUDA_VERSION (default 12.9) and AF_CI_CUDA_ARCHITECTURES
-# (default 7.5;8.9) select the toolkit and the GPU architectures.
+# A job builds and tests the source tree in AF_CI_SOURCE_DIR (default: this
+# repository) with this repository's scripts and CI settings, so it can test any
+# commit. For the linux-cuda-gpu-* jobs, AF_CI_CUDA_VERSION (default 12.9) and
+# AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
+# architectures.
 #
 # Usage: ci.sh [--docker] [--no-deps] <job>
 #        ci.sh --list
@@ -103,11 +104,12 @@ if [[ -n $docker ]]; then
       "Set CMAKE_BUILD_PARALLEL_LEVEL to override."
   fi
   # The repository is mounted, so build trees land in build/ as usual; give them
-  # and a ccache directory back to the calling user afterwards. The GPU jobs
-  # mount this repository read-only at /ci and the source tree under test at /src.
+  # and a ccache directory back to the calling user afterwards. A source tree from
+  # elsewhere, and always the GPU jobs' one, is mounted at /src, with this
+  # repository read-only at /ci.
   mounts=(-v "$root:/src")
   script=.github/scripts/ci.sh
-  if [[ $job == linux-cuda-gpu-* ]]; then
+  if [[ $job == linux-cuda-gpu-* || $source != "$root" ]]; then
     mounts=(-v "$root:/ci:ro" -v "$source:/src" -e AF_CI_SOURCE_DIR=/src
             -e AF_CI_CUDA_VERSION -e AF_CI_CUDA_ARCHITECTURES)
     script=/ci/.github/scripts/ci.sh
@@ -141,6 +143,14 @@ if [[ -n $deps ]]; then
   esac
 fi
 
+# A source tree from elsewhere gets this repository's presets, which hold the CI
+# settings, so commits that predate them can be tested the same way.
+if [[ $source != "$root" && $job != linux-cuda-gpu-* ]]; then
+  cp "$root/CMakePresets.json" "$source/CMakePresets.json"
+  echo "Building $source with the presets of $root"
+fi
+cd "$source"
+
 case $job in
   lint)
     "$scripts/lint.sh"
@@ -165,7 +175,7 @@ case $job in
     "/opt/cmake-$floor_cmake/bin/cmake" --build "$build"
     # The distribution's ctest runs the same tests and can write JUnit.
     OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$build" \
-      -j 2 --output-on-failure --no-tests=error --output-junit "$root/$build/junit.xml"
+      -j 2 --output-on-failure --no-tests=error --output-junit "$source/$build/junit.xml"
     ;;
   linux-cuda-gpu-build)
     cmake -S "$source" -B "$gpu_build" -G Ninja -C "$scripts/linux-cuda-gpu.cmake" \
