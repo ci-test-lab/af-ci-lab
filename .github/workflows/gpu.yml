@@ -5,7 +5,9 @@ name: GPU tests
 # workflow runs on; only the source tree comes from the requested commit. Callers
 # must run from a trusted ref, never from a pull request.
 # The jobs run only when the repository variable AF_CI_GPU_TESTS is 'true'; the
-# test job also needs AF_CI_GPU_RUNNER, the label of the GPU runner.
+# test job also needs AF_CI_GPU_RUNNER, the label of the GPU runner. The test job
+# uses the gpu-tests environment, so it waits until one of the environment's
+# required reviewers approves it; the build runs before that.
 on:
   workflow_dispatch:
     inputs:
@@ -81,19 +83,27 @@ jobs:
           persist-credentials: false
       - name: Check out the commit under test
         run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/ccache
           key: ccache-gpu-cuda-${{ inputs.cuda }}-${{ inputs.sha }}
           restore-keys: ccache-gpu-cuda-${{ inputs.cuda }}-
       - name: Build
         run: .github/scripts/ci.sh --docker linux-cuda-gpu-build
+      # Only a build of this ref's own commit saves the ccache: any other commit
+      # could plant entries in it.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: inputs.sha == github.sha
+        with:
+          path: build/ccache
+          key: ccache-gpu-cuda-${{ inputs.cuda }}-${{ inputs.sha }}
+      # Kept long enough for the test job to wait for its approval.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !env.ACT }}
         with:
           path: under-test/build/ci-linux-cuda-gpu.tar.zst
           archive: false
-          retention-days: 3
+          retention-days: 14
           if-no-files-found: error
 
   test:
@@ -101,6 +111,7 @@ jobs:
     needs: build
     if: vars.AF_CI_GPU_TESTS == 'true' && vars.AF_CI_GPU_RUNNER != ''
     runs-on: ${{ vars.AF_CI_GPU_RUNNER }}
+    environment: gpu-tests
     # A run took up to 15 min on an RTX 4070 Ti: 3.5–10 min of packages, 4 min of tests.
     # A T4 runs the tests slower.
     timeout-minutes: 45
