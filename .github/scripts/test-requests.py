@@ -34,7 +34,9 @@ WRITE_ROLES = {"admin", "maintain", "write"}
 # Commenters who get an answer besides the pull request's author; others are
 # ignored, so that nobody can make the workflow spam a pull request.
 KNOWN = {"OWNER", "MEMBER", "COLLABORATOR"}
-LOOP_BOT = "github-actions[bot]"
+# The account of GitHub Actions' own token: its comments are ignored, and only its
+# cpu-tests statuses, which this workflow posts, count.
+ACTIONS_BOT = "github-actions[bot]"
 
 
 def decision(action, reason, reply="", command="", sha="", cuda="", accelerators=False,
@@ -53,7 +55,7 @@ def decide(event, settings, api, now):
 
     if not issue.get("pull_request"):
         return decision("ignore", "not-pull-request")
-    if login == LOOP_BOT:
+    if login == ACTIONS_BOT:
         return decision("ignore", "own-comment")
     word = re.match(r"/(cpu|gpu)-tests(\s|$)", first)
     if not word:
@@ -137,7 +139,10 @@ def bot_refusal(settings, api, number, pull, sha, now):
     """The limits on the Claude App's own GPU requests; None when within them."""
     checks = latest_light_checks(api, sha)
     red = [name for name in LIGHT_CHECKS if (checks.get(name) or {}).get("conclusion") != "success"]
-    if api.status(sha, "cpu-tests") != "success":
+    cpu_tests = next((status["state"] for status in api.statuses(sha)
+                      if status["context"] == "cpu-tests"
+                      and status["creator"]["login"] == ACTIONS_BOT), None)
+    if cpu_tests != "success":
         red.append("cpu-tests")
     if red:
         return "cpu-not-green", "these checks are not green on it: " + ", ".join(red) + "."
@@ -200,12 +205,9 @@ class GitHub:
     def check_runs(self, sha):
         return self.call("GET", f"commits/{sha}/check-runs?per_page=100")["check_runs"]
 
-    def status(self, sha, context):
-        """The state of the latest commit status called context, or None."""
-        for status in self.call("GET", f"commits/{sha}/status?per_page=100")["statuses"]:
-            if status["context"] == context:
-                return status["state"]
-        return None
+    def statuses(self, sha):
+        """The commit statuses of sha, newest first."""
+        return self.call("GET", f"commits/{sha}/statuses?per_page=100")
 
     def request_runs(self, actor, since):
         query = urllib.parse.urlencode({"event": "issue_comment", "actor": actor, "per_page": 100,
@@ -248,9 +250,9 @@ class Fixtures:
         self.calls.append(f"check-runs {sha}")
         return self.answers.get("check_runs", {}).get(sha, [])
 
-    def status(self, sha, context):
-        self.calls.append(f"status {context} {sha}")
-        return self.answers.get("statuses", {}).get(sha, {}).get(context)
+    def statuses(self, sha):
+        self.calls.append(f"statuses {sha}")
+        return self.answers.get("statuses", {}).get(sha, [])
 
     def request_runs(self, actor, since):
         self.calls.append(f"request-runs {actor}")

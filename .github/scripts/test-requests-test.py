@@ -60,14 +60,19 @@ def checks(app="github-actions", **conclusions):
              "conclusion": conclusions.get(name, "success")} for i, name in enumerate(names)]
 
 
-def answers(author="maintainer-a", check_runs=None, cpu_tests="success", runs=()):
+def status(state, creator="github-actions[bot]", context="cpu-tests"):
+    return {"context": context, "state": state, "creator": {"login": creator}}
+
+
+def answers(author="maintainer-a", check_runs=None, statuses=None, runs=()):
+    """API answers; statuses are newest first, and by default CPU tests passed on HEAD."""
     return {"permissions": {"maintainer-a": "maintain", "admin-b": "admin", "writer-c": "write",
                             "reader-d": "read", "triager-e": "triage"},
             "pull": {"number": PR, "head": {"sha": HEAD}, "user": {"login": author}},
             "check_runs": {HEAD: checks() if check_runs is None else check_runs,
                            STALE_HEAD: checks()},
-            "statuses": {HEAD: {"cpu-tests": cpu_tests} if cpu_tests else {},
-                         STALE_HEAD: {"cpu-tests": "success"}},
+            "statuses": {HEAD: [status("success"), status("pending")] if statuses is None else statuses,
+                         STALE_HEAD: [status("success")]},
             "runs": [r for r, _ in runs], "jobs": {str(r["id"]): jobs for r, jobs in runs}}
 
 
@@ -145,10 +150,14 @@ CASES = [
      {}, accept("gpu", "12.9"), None),
     ("gpu: Claude bot is accepted on its own PR", event(BOT, author=BOT), answers(author=BOT), {},
      accept("gpu", "12.9"), None),
-    ("gpu: Claude bot is refused when its CPU tests are red", event(BOT), answers(cpu_tests="failure"),
-     {}, refuse("gpu", "cpu-not-green"), None),
-    ("gpu: Claude bot is refused when its CPU tests never ran", event(BOT), answers(cpu_tests=None),
-     {}, refuse("gpu", "cpu-not-green"), None),
+    ("gpu: Claude bot is refused when its CPU tests are red", event(BOT),
+     answers(statuses=[status("failure"), status("success"), status("pending")]), {},
+     refuse("gpu", "cpu-not-green"), None),
+    ("gpu: Claude bot is refused when its CPU tests never ran", event(BOT),
+     answers(statuses=[status("success", context="other")]), {}, refuse("gpu", "cpu-not-green"), None),
+    ("gpu: a cpu-tests status posted by the bot itself doesn't count", event(BOT),
+     answers(statuses=[status("success", creator=BOT), status("failure")]), {},
+     refuse("gpu", "cpu-not-green"), None),
     ("gpu: Claude bot is refused when a light check is red", event(BOT),
      answers(check_runs=red_after_green()), {}, refuse("gpu", "cpu-not-green"), None),
     ("gpu: Claude bot is refused when a light check is missing", event(BOT),
