@@ -1,20 +1,64 @@
-name: CPU
+name: CPU tests
 
+# The CPU builds and tests, plus the compile-only CUDA, OpenCL and oneAPI builds.
+# The CPU tests run in the merge queue and on pushes to master; a pull request
+# gets them with a /cpu-tests comment (test-requests.yml), and anyone with write
+# access can run this workflow for a commit. The accelerator builds run on pushes
+# to master and on request, only when the repository variable
+# AF_CI_ACCELERATOR_BUILDS is 'true'.
+#
+# A run for a SHA builds that commit, checked out on its own, with the scripts
+# and CI presets of the ref this workflow runs on.
 on:
   push:
     branches:
       - master
-  pull_request:
-    branches:
-      - master
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character SHA of the commit to test; empty tests the selected branch
+        type: string
+      accelerators:
+        description: Also build the CUDA, OpenCL and oneAPI backends
+        type: boolean
+        default: false
+      macos-windows:
+        description: Also run the macOS and Windows jobs
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      sha:
+        description: Full 40-character SHA of the commit to test
+        required: true
+        type: string
+      accelerators:
+        description: Also build the CUDA, OpenCL and oneAPI backends
+        type: boolean
+        default: false
+      macos-windows:
+        description: >-
+          Also run the macOS and Windows jobs. They build on the runner itself, not in a
+          container, so the code under test could reach the runner's cache credentials.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: cpu-tests-${{ inputs.sha || github.ref }}
+  cancel-in-progress: false
 
+env:
+  SHA: ${{ inputs.sha }}
+  # Where the commit given by SHA is checked out; empty builds this checkout.
+  AF_CI_SOURCE_DIR: ${{ inputs.sha && format('{0}/under-test', github.workspace) || '' }}
+  UNDER_TEST: ${{ inputs.sha && 'under-test/' || '' }}
+
+# Every job restores the ccache of master's builds, but only those builds save
+# one: a build of another commit runs code that could plant entries in it.
 jobs:
   linux:
     name: ${{ matrix.job }}
@@ -31,22 +75,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Check out the commit under test
+        if: env.SHA != ''
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/ccache
           key: ccache-${{ matrix.job }}-${{ github.sha }}
           restore-keys: ccache-${{ matrix.job }}-
       - name: Build and test
         run: .github/scripts/ci.sh --docker ${{ matrix.job }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: build/ccache
+          key: ccache-${{ matrix.job }}-${{ github.sha }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && !env.ACT }}
         with:
           name: junit-${{ matrix.job }}
-          path: build/ci-${{ matrix.job }}/junit.xml
+          path: ${{ env.UNDER_TEST }}build/ci-${{ matrix.job }}/junit.xml
           if-no-files-found: ignore
 
   macos:
     name: macos-arm64-clang-accelerate
+    if: ${{ !inputs.sha || inputs.macos-windows }}
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -56,22 +109,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Check out the commit under test
+        if: env.SHA != ''
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/ccache
           key: ccache-macos-arm64-clang-accelerate-${{ github.sha }}
           restore-keys: ccache-macos-arm64-clang-accelerate-
       - name: Build and test
         run: .github/scripts/ci.sh macos-arm64-clang-accelerate
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: build/ccache
+          key: ccache-macos-arm64-clang-accelerate-${{ github.sha }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && !env.ACT }}
         with:
           name: junit-macos-arm64-clang-accelerate
-          path: build/ci-macos-arm64-clang-accelerate/junit.xml
+          path: ${{ env.UNDER_TEST }}build/ci-macos-arm64-clang-accelerate/junit.xml
           if-no-files-found: ignore
 
   windows:
     name: windows-msvc-openblas
+    if: ${{ !inputs.sha || inputs.macos-windows }}
     runs-on: windows-2022
     timeout-minutes: 180
     defaults:
@@ -81,7 +143,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Check out the commit under test
+        if: env.SHA != ''
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**') }}
@@ -89,9 +154,57 @@ jobs:
         env:
           VCPKG_ROOT: ${{ runner.temp }}\vcpkg
         run: .github/scripts/ci.sh windows-msvc-openblas
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**') }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && !env.ACT }}
         with:
           name: junit-windows-msvc-openblas
-          path: build/ci-windows-msvc-openblas/junit.xml
+          path: ${{ env.UNDER_TEST }}build/ci-windows-msvc-openblas/junit.xml
           if-no-files-found: ignore
+
+  accelerators:
+    name: ${{ matrix.job }}
+    if: >-
+      vars.AF_CI_ACCELERATOR_BUILDS == 'true' &&
+      (github.event_name == 'push' || inputs.accelerators)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: linux-cuda
+            timeout: 90
+          - job: linux-opencl
+            timeout: 60
+          - job: linux-oneapi
+            timeout: 150
+    env:
+      AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 1G
+      # The heaviest compiles (SYCL) take up to 2.5 GB each; four in parallel fit a
+      # 4-vCPU, 16 GB runner.
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ vars.AF_CI_BUILD_PARALLEL_LEVEL || 4 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the commit under test
+        if: env.SHA != ''
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/ccache
+          key: ccache-${{ matrix.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.job }}-
+      - name: Build
+        run: .github/scripts/ci.sh --docker ${{ matrix.job }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: build/ccache
+          key: ccache-${{ matrix.job }}-${{ github.sha }}
