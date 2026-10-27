@@ -11,12 +11,12 @@ permissions:
   contents: read
 
 jobs:
-  upload_src_tarball:
-    name: Upload release source tarball
+  build:
+    name: Build the release source tarball
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Read the version from the tag
         id: version
@@ -31,15 +31,30 @@ jobs:
         run: |
           cp "arrayfire-full-$VERSION/.github/scripts/make-source-tarball.sh" "$RUNNER_TEMP/"
           "$RUNNER_TEMP/make-source-tarball.sh" "arrayfire-full-$VERSION" "$VERSION"
-      - name: Upload the tarball to the release
-        if: github.event_name == 'push' && !env.ACT
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: gh release upload "$GITHUB_REF_NAME" "arrayfire-full-$VERSION.tar.bz2" --repo "$GITHUB_REPOSITORY" --clobber
       - name: Keep the tarball as an artifact
-        if: github.event_name == 'workflow_dispatch' && !env.ACT
+        if: ${{ !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: source-tarball
           path: arrayfire-full-${{ steps.version.outputs.version }}.tar.bz2
+          archive: false
+          if-no-files-found: error
+
+  # The only job that can write to the repository, and only for a version tag.
+  upload:
+    name: Upload release source tarball
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TARBALL: arrayfire-full-${{ needs.build.outputs.version }}.tar.bz2
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.TARBALL }}
+      - name: Upload the tarball to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$TARBALL" --repo "$GITHUB_REPOSITORY" --clobber
