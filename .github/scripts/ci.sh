@@ -100,12 +100,12 @@ if [[ -n $docker ]]; then
     [[ $args =~ [[:space:]]--cpus[=[:space:]]*([0-9]+) ]] && cpus=${BASH_REMATCH[1]}
     per_compile=768 per_compile_gib=0.75
     [[ $job == linux-oneapi ]] && per_compile=2560 per_compile_gib=2.5
-    jobs=$((mib / per_compile))
-    ((jobs > cpus)) && jobs=$cpus
-    ((jobs > 8)) && jobs=8
-    ((jobs < 1)) && jobs=1
-    export CMAKE_BUILD_PARALLEL_LEVEL=$jobs
-    echo "Building with $jobs parallel jobs: $mib MiB ($memory) / $per_compile_gib GiB" \
+    parallel=$((mib / per_compile))
+    ((parallel > cpus)) && parallel=$cpus
+    ((parallel > 8)) && parallel=8
+    ((parallel < 1)) && parallel=1
+    export CMAKE_BUILD_PARALLEL_LEVEL=$parallel
+    echo "Building with $parallel parallel jobs: $mib MiB ($memory) / $per_compile_gib GiB" \
       "per compile = $((mib / per_compile)), $cpus CPUs, at most 8." \
       "Set CMAKE_BUILD_PARALLEL_LEVEL to override."
   fi
