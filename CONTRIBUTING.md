@@ -52,7 +52,9 @@ CI runs in three tiers:
 
 Requests test the exact commit that is the pull request's head at that moment, with the CI
 scripts from `master`. Maintainers can also start the "CPU tests" or "GPU tests" workflow by
-hand with a commit SHA.
+hand with a commit SHA. `/cpu-tests` also uses the CMake presets from `master`, while the merge
+queue uses the pull request's own, so a change to `CMakePresets.json` is really tested in the
+merge queue.
 
 ## Running the CI Checks Locally ##
 
