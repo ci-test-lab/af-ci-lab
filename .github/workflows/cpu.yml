@@ -146,19 +146,34 @@ jobs:
       - name: Check out the commit under test
         if: env.SHA != ''
         run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      # vcpkg's binary cache, saved under a new key whenever a push run added
+      # archives, even if the run failed later: a key is never overwritten, and
+      # the newest entry with the prefix is restored.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}-${{ github.sha }}
+          restore-keys: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}-
+      - name: Count the restored vcpkg archives
+        id: vcpkg-restored
+        run: .github/scripts/count-vcpkg-archives.sh ~/AppData/Local/vcpkg/archives
+      # Below the job's timeout, so that a slow build still leaves time to save.
       - name: Build and test
+        timeout-minutes: 150
         env:
           VCPKG_ROOT: ${{ runner.temp }}\vcpkg
         run: .github/scripts/ci.sh windows-msvc-openblas
+      - name: Count the vcpkg archives after the build
+        id: vcpkg-built
+        if: always() && github.event_name == 'push'
+        env:
+          RESTORED: ${{ steps.vcpkg-restored.outputs.count || 0 }}
+        run: .github/scripts/count-vcpkg-archives.sh ~/AppData/Local/vcpkg/archives "$RESTORED"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.event_name == 'push'
+        if: always() && steps.vcpkg-built.outputs.new == 'true'
         with:
           path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}-${{ github.sha }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && !env.ACT }}
         with:
