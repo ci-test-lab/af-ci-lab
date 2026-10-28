@@ -387,7 +387,12 @@
       },
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "CMAKE_VS_GLOBALS": "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true"
+        "CMAKE_VS_GLOBALS": "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true",
+        "has_all_warnings_flag": "OFF"
+      },
+      "environment": {
+        "CFLAGS": "/W3",
+        "CXXFLAGS": "/W3"
       }
     },
     {
