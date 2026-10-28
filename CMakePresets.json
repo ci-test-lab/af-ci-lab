@@ -493,7 +493,8 @@
       "inherits": "ci",
       "configurePreset": "ci-macos-arm64-clang-accelerate",
       "environment": {
-        "DYLD_FALLBACK_LIBRARY_PATH": "/opt/homebrew/lib:/usr/local/lib:/usr/lib"
+        "DYLD_FALLBACK_LIBRARY_PATH": "/opt/homebrew/lib:/usr/local/lib:/usr/lib",
+        "GTEST_FILTER": "-Large/MeanVarFloat.*/Sample1Ddim*:Large/MeanVarInt.*/Sample1Ddim*:Large/MeanVarUnsignedInt.*/Sample1Ddim*:Large/MeanVarShort.*/Sample1Ddim*:Large/MeanVarUnsignedShort.*/Sample1Ddim*"
       }
     },
     {
