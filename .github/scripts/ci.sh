@@ -9,6 +9,7 @@
 # AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
 # architectures. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
 # tree's tracked files without .git instead of mounting the tree itself.
+# The macOS job runs it on the host, so all but --docker must run on bash 3.2.
 #
 # Usage: ci.sh [--docker] [--no-deps] <job>
 #        ci.sh --list
