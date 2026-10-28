@@ -136,6 +136,11 @@ jobs:
     if: ${{ !inputs.sha || inputs.macos-windows }}
     runs-on: windows-2022
     timeout-minutes: 180
+    env:
+      # MSBuild builds this many projects at once (/m). The configure preset also
+      # turns on MSBuild's multi-tool task, which compiles the files of a project in
+      # parallel, with at most one compiler per logical CPU across all projects.
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ vars.AF_CI_BUILD_PARALLEL_LEVEL || 4 }}
     defaults:
       run:
         shell: bash

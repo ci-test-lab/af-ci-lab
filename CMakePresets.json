@@ -386,7 +386,8 @@
         "strategy": "set"
       },
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_VS_GLOBALS": "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true"
       }
     },
     {
