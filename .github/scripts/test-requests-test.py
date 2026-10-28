@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
-"""Fixture tests of the "/cpu-tests" and "/gpu-tests" decisions in test-requests.py.
+"""Fixture tests of the "/cpu-tests" and "/gpu-tests" decisions in test-requests.py, and of
+how its commands handle failed API calls.
 
-Each case is an issue_comment event plus the API answers; the test prints the expected
-and the actual decision and fails if any case differs.
+Each decision case is an issue_comment event plus the API answers; the test prints the
+expected and the actual decision and fails if any case differs. The command cases run
+test-requests.py as the workflow's jobs do, on fixtures, with some writes failing.
 """
+import contextlib
 import copy
 import datetime
 import importlib.util
+import io
+import json
 import os
+import subprocess
 import sys
+import tempfile
+import unittest.mock
+import urllib.error
 import urllib.parse
+import urllib.request
 
 sys.dont_write_bytecode = True
-spec = importlib.util.spec_from_file_location(
-    "test_requests", os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-requests.py"))
+SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-requests.py")
+spec = importlib.util.spec_from_file_location("test_requests", SCRIPT)
 test_requests = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(test_requests)
 
@@ -229,6 +239,118 @@ def run_listing():
     return actual == expected
 
 
+def api_error_annotation():
+    """GitHub.call turns an HTTP error into an annotation with the method, the path, the
+    status and GitHub's message, cut to about 200 characters, and re-raises it; the request's
+    headers, which hold the token, are not in it."""
+    token = "test-token-not-a-credential"
+    sent = []
+
+    def urlopen(request, timeout):
+        sent.append(request)
+        body = {"message": "Resource not accessible by integration " + "x" * 300,
+                "documentation_url": "https://docs.github.com/rest/issues/comments"}
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {"X-GitHub-Request-Id": "1"},
+                                     io.BytesIO(json.dumps(body).encode()))
+
+    output = io.StringIO()
+    with unittest.mock.patch.object(urllib.request, "urlopen", urlopen), \
+            contextlib.redirect_stdout(output):
+        try:
+            test_requests.GitHub("arrayfire/arrayfire", token).comment(PR, "CPU tests requested.")
+            raised = None
+        except urllib.error.HTTPError as error:
+            raised = error.code
+    printed = output.getvalue()
+    prefix = f"::error::GitHub API POST issues/{PR}/comments failed: HTTP 403: "
+    message = printed.strip()[len(prefix):]
+    actual = (raised, sent[0].get_header("Authorization") == f"Bearer {token}",
+              printed.startswith(prefix) and printed.count("\n") == 1,
+              message.startswith("Resource not accessible by integration") and len(message) <= 200,
+              "Authorization" in printed or "Bearer" in printed or token in printed)
+    expected = (403, True, True, True, False)
+    print(f"{'ok  ' if actual == expected else 'FAIL'} an API error is annotated without the request's headers\n"
+          f"     expected: re-raised, token sent, one annotation, message cut to 200, headers shown = {expected}\n"
+          f"     actual:   re-raised, token sent, one annotation, message cut to 200, headers shown = {actual}\n"
+          f"     printed: {printed.strip()}")
+    return actual == expected
+
+
+def permission_not_found():
+    """permission() still reads a 404 as no access, without an annotation."""
+    def urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {},
+                                     io.BytesIO(b'{"message": "Not Found"}'))
+
+    output = io.StringIO()
+    with unittest.mock.patch.object(urllib.request, "urlopen", urlopen), \
+            contextlib.redirect_stdout(output):
+        role = test_requests.GitHub("arrayfire/arrayfire", "").permission("contributor-g")
+    actual = (role, output.getvalue())
+    expected = ("none", "")
+    print(f"{'ok  ' if actual == expected else 'FAIL'} permission() reads a 404 as no access, quietly\n"
+          f"     expected: role, output = {expected}\n"
+          f"     actual:   role, output = {actual}")
+    return actual == expected
+
+
+def run_command(command, fail):
+    """Runs test-requests.py <command> on fixtures, as the workflow's jobs run it; fail maps a
+    write (comment, set_status) to the HTTP status and message it fails with."""
+    fixtures = {"fail": {name: {"status": code, "body": {"message": message}}
+                         for name, (code, message) in fail.items()}}
+    with tempfile.TemporaryDirectory() as tmp:
+        files = {}
+        for name, value in (("event", event("maintainer-a", "/cpu-tests")), ("fixtures", fixtures)):
+            files[name] = os.path.join(tmp, f"{name}.json")
+            with open(files[name], "w") as file:
+                json.dump(value, file)
+        process = subprocess.run(
+            [sys.executable, "-I", SCRIPT, command], capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ.get("PATH", ""), "ACT": "true",
+                 "AF_CI_REQUEST_FIXTURES": files["fixtures"], "GITHUB_EVENT_PATH": files["event"],
+                 "GITHUB_REPOSITORY": "arrayfire/arrayfire", "GITHUB_RUN_ID": "900",
+                 "COMMAND": "cpu", "SHA": HEAD, "CUDA": "", "REPLY": "CPU tests requested.",
+                 "RESULT": "success", "SUMMARY": ""})
+    return process.returncode, process.stdout + process.stderr
+
+
+FORBIDDEN = (403, "Resource not accessible by integration")
+COMMENT_FAILED = f"GitHub API POST issues/{PR}/comments failed: HTTP 403: Resource not accessible by integration"
+STATUS_FAILED = f"GitHub API POST statuses/{HEAD} failed: HTTP 403: Resource not accessible by integration"
+COMMAND_CASES = [
+    # name, command, failing writes, exits with 0, printed, not printed
+    ("accepted: sets the pending status and comments", "accepted", {}, True,
+     [f"[fixture] status cpu-tests=pending on {HEAD}", f"[fixture] comment on #{PR}"], ["::"]),
+    ("accepted: a failed comment is a warning; the status stays and the tests go on", "accepted",
+     {"comment": FORBIDDEN}, True,
+     [f"[fixture] status cpu-tests=pending on {HEAD}", f"::warning::{COMMENT_FAILED}"],
+     ["[fixture] comment", "::error::"]),
+    ("accepted: a failed status fails the job", "accepted", {"set_status": FORBIDDEN}, False,
+     [f"::error::{STATUS_FAILED}"], ["[fixture] status", "[fixture] comment"]),
+    ("report: a failed comment is a warning; the status stays", "report", {"comment": FORBIDDEN}, True,
+     [f"[fixture] status cpu-tests=success on {HEAD}", f"::warning::{COMMENT_FAILED}"],
+     ["[fixture] comment", "::error::"]),
+    ("report: a failed status fails the job", "report", {"set_status": FORBIDDEN}, False,
+     [f"::error::{STATUS_FAILED}"], ["[fixture] status", "[fixture] comment"]),
+    ("reply: comments", "reply", {}, True, [f"[fixture] comment on #{PR}:\nCPU tests requested."], ["::"]),
+    ("reply: a failed comment fails the job", "reply", {"comment": FORBIDDEN}, False,
+     [f"::error::{COMMENT_FAILED}"], ["[fixture] comment", "::warning::"]),
+]
+
+
+def command_case(name, command, fail, succeeds, printed, not_printed):
+    code, output = run_command(command, fail)
+    ok = ((code == 0) == succeeds and all(text in output for text in printed)
+          and not any(text in output for text in not_printed))
+    shown = [line for line in output.splitlines() if line.startswith(("::", "[fixture]", "Not commenting"))]
+    print(f"{'ok  ' if ok else 'FAIL'} {name}\n"
+          f"     expected: exit {'0' if succeeds else 'non-zero'}\n"
+          f"     actual:   exit {code}"
+          + "".join(f"\n     printed: {line}" for line in shown))
+    return ok
+
+
 def show(values):
     action, reason, command, sha, cuda, accelerators, macos_windows = values
     return (f"{action} {reason} command={command or '-'} sha={sha or '-'} cuda={cuda or '-'} "
@@ -236,7 +358,7 @@ def show(values):
 
 
 def main():
-    failed = 0 if run_listing() else 1
+    results = [run_listing()]
     for name, ev, api_answers, changes, expected, expected_calls in CASES:
         api = test_requests.Fixtures(copy.deepcopy(api_answers))
         result = test_requests.decide(ev, {**SETTINGS, **changes}, api, NOW)
@@ -249,14 +371,16 @@ def main():
             ok = ok and not result["reply"]
         if expected_calls is not None:
             ok = ok and api.calls == expected_calls
-        failed += not ok
+        results.append(ok)
         print(f"{'ok  ' if ok else 'FAIL'} {name}\n"
               f"     expected: {show(expected)}\n"
               f"     actual:   {show(actual)}"
               + (f"\n     API calls: {api.calls or 'none'}" if expected_calls is not None else "")
               + (f"\n     reply: {result['reply']}" if result["reply"] else ""))
-    print(f"{len(CASES) + 1 - failed} of {len(CASES) + 1} cases match")
-    return 1 if failed else 0
+    results += [api_error_annotation(), permission_not_found()]
+    results += [command_case(*case) for case in COMMAND_CASES]
+    print(f"{sum(results)} of {len(results)} cases match")
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":

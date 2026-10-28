@@ -10,11 +10,16 @@
                               workflow's result and, for GPU runs, its test summary)
                               and comment
 
+The commit status is the result; in accepted and report a comment that fails is only a
+warning. A failed API call becomes an annotation of the run, which, unlike the job log,
+can be read without logging in.
+
 decide() depends only on the event, the settings and the API answers. With
 AF_CI_REQUEST_FIXTURES naming a JSON file of API answers, those replace GitHub and
 nothing is written; that is honoured only in act runs (ACT=true).
 """
 import datetime
+import io
 import json
 import os
 import re
@@ -173,6 +178,25 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
+def annotate(level, text):
+    """Prints text as an annotation of the run (level is error or warning)."""
+    text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::{level}::{text}", flush=True)
+
+
+def describe(method, path, error):
+    """A failed API call: the request, the HTTP status and the message of GitHub's JSON
+    error body. Never the request's headers, which hold the token."""
+    try:
+        message = json.loads(error.read().decode("utf-8", "replace")).get("message")
+    except (OSError, ValueError, AttributeError):
+        message = None
+    message = " ".join(str(message or error.reason).split())
+    if len(message) > 200:
+        message = message[:197] + "..."
+    return f"GitHub API {method} {path} failed: HTTP {error.code}: {message}"
+
+
 class GitHub:
     """The REST calls of the policy and the reports."""
 
@@ -180,19 +204,26 @@ class GitHub:
         self.repo = repo
         self.token = token
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, level="error", quiet=()):
+        """An HTTP error becomes an annotation at level, unless its status is in quiet."""
         request = urllib.request.Request(
             f"https://api.github.com/repos/{self.repo}/{path}", method=method,
             data=json.dumps(body).encode() if body is not None else None,
             headers={"Accept": "application/vnd.github+json",
                      "Authorization": f"Bearer {self.token}",
                      "X-GitHub-Api-Version": "2022-11-28"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code not in quiet:
+                annotate(level, describe(method, path, error))
+            raise
 
     def permission(self, user):
         try:
-            answer = self.call("GET", f"collaborators/{urllib.parse.quote(user)}/permission")
+            answer = self.call("GET", f"collaborators/{urllib.parse.quote(user)}/permission",
+                               quiet=(404,))
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return "none"
@@ -223,8 +254,8 @@ class GitHub:
     def run_jobs(self, run_id):
         return self.call("GET", f"actions/runs/{run_id}/jobs?per_page=100")["jobs"]
 
-    def comment(self, number, body):
-        self.call("POST", f"issues/{number}/comments", {"body": body})
+    def comment(self, number, body, level="error"):
+        self.call("POST", f"issues/{number}/comments", {"body": body}, level)
 
     def set_status(self, sha, context, state, description, url):
         self.call("POST", f"statuses/{sha}", {"state": state, "description": description[:140],
@@ -232,11 +263,21 @@ class GitHub:
 
 
 class Fixtures:
-    """API answers from a JSON object instead of GitHub; writes are printed, not sent."""
+    """API answers from a JSON object instead of GitHub; writes are printed, not sent.
+    An entry "fail": {"comment": {"status": 403, "body": {"message": ...}}} makes that
+    write fail as GitHub.call fails, with that HTTP status and JSON error body."""
 
     def __init__(self, answers):
         self.answers = answers
         self.calls = []
+
+    def fail(self, name, method, path, level="error"):
+        failure = self.answers.get("fail", {}).get(name)
+        if failure:
+            error = urllib.error.HTTPError(path, failure["status"], "fixture", None,
+                                           io.BytesIO(json.dumps(failure.get("body", {})).encode()))
+            annotate(level, describe(method, path, error))
+            raise error
 
     def permission(self, user):
         self.calls.append(f"permission {user}")
@@ -262,10 +303,12 @@ class Fixtures:
         self.calls.append(f"jobs {run_id}")
         return self.answers.get("jobs", {}).get(str(run_id), [])
 
-    def comment(self, number, body):
+    def comment(self, number, body, level="error"):
+        self.fail("comment", "POST", f"issues/{number}/comments", level)
         print(f"[fixture] comment on #{number}:\n{body}")
 
     def set_status(self, sha, context, state, description, url):
+        self.fail("set_status", "POST", f"statuses/{sha}")
         print(f"[fixture] status {context}={state} on {sha}: {description} ({url})")
 
 
@@ -310,6 +353,17 @@ def final_state(command, result, summary):
     return "error", f"did not complete (result: {result or 'unknown'})"
 
 
+def comment_after_status(api, number, body):
+    """Posts a comment whose failure doesn't fail the job: the commit status, already set,
+    is the result, and the comment is a courtesy."""
+    try:
+        api.comment(number, body, level="warning")
+    except urllib.error.HTTPError:
+        print(f"Not commenting on #{number}; the commit status is set.")
+    except OSError as error:
+        annotate("warning", f"Not commenting on #{number}; the commit status is set: {error}")
+
+
 def main(command):
     with open(os.environ["GITHUB_EVENT_PATH"]) as file:
         event = json.load(file)
@@ -340,13 +394,13 @@ def main(command):
         else:
             text = "CPU tests queued"
         api.set_status(sha, f"{kind}-tests", "pending", text, run_url)
-        api.comment(number, f"{os.environ['REPLY']} [Run]({run_url})")
+        comment_after_status(api, number, f"{os.environ['REPLY']} [Run]({run_url})")
     elif command == "report":
         kind, sha = os.environ["COMMAND"], os.environ["SHA"]
         state, text = final_state(kind, os.environ.get("RESULT", ""), os.environ.get("SUMMARY", ""))
         what = f"GPU tests (CUDA {os.environ['CUDA']})" if kind == "gpu" else "CPU tests"
         api.set_status(sha, f"{kind}-tests", state, f"{what} {text}", run_url)
-        api.comment(number, f"{what} of `{sha}` {text} [Run]({run_url})")
+        comment_after_status(api, number, f"{what} of `{sha}` {text} [Run]({run_url})")
     else:
         sys.exit(f"unknown command: {command}")
 
