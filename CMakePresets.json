@@ -366,7 +366,10 @@
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       },
-      "description": "CPU backend with Apple Clang, Accelerate and FFTW"
+      "description": "CPU backend with Apple Clang, Accelerate and FFTW",
+      "cacheVariables": {
+        "CMAKE_DISABLE_FIND_PACKAGE_fmt": "ON"
+      }
     },
     {
       "name": "ci-windows-msvc-openblas",
