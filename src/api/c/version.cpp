@@ -18,6 +18,6 @@ af_err af_get_version(int *major, int *minor, int *patch) {
     return AF_SUCCESS;
 }
 
-const char *af_get_revision() {return AF_REVISION;}
+const char *af_get_revision() { return AF_REVISION; }
 
 // A one-line change for the pull-request tests.
