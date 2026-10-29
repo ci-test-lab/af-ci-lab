@@ -9,7 +9,7 @@
 # AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
 # architectures. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
 # tree's tracked files without .git instead of mounting the tree itself.
-# The macOS job runs it on the host, so all but --docker must run on bash 3.2.
+# It must run on macOS's bash 3.2: the macOS job runs it on the host.
 #
 # Usage: ci.sh [--docker] [--no-deps] <job>
 #        ci.sh --list
@@ -88,8 +88,8 @@ if [[ -n $docker ]]; then
     read -r cpus mib <<< "$(docker info --format '{{.NCPU}} {{.MemTotal}}')"
     mib=$((mib * 3 / 4 / 1048576))
     memory="3/4 of Docker's memory"
-    args=" ${AF_CI_DOCKER_ARGS:-} "
-    if [[ ${args,,} =~ [[:space:]](--memory|-m)[=[:space:]]*([0-9]+)([kmg]?)b?[[:space:]] ]]; then
+    args=$(printf ' %s ' "${AF_CI_DOCKER_ARGS:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ $args =~ [[:space:]](--memory|-m)[=[:space:]]*([0-9]+)([kmg]?)b?[[:space:]] ]]; then
       case ${BASH_REMATCH[3]} in
         g) mib=$((BASH_REMATCH[2] * 1024)) ;;
         m) mib=${BASH_REMATCH[2]} ;;
@@ -144,7 +144,7 @@ if [[ -n $docker ]]; then
     [[ $job == *-test ]] && mounts+=(--gpus all)
   fi
   # shellcheck disable=SC2086
-  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" "${lint_diff[@]}" -w /src \
+  exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" ${lint_diff[@]+"${lint_diff[@]}"} -w /src \
     -v "$ccache:/ccache" -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
     -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE \
