@@ -10,6 +10,7 @@
 #include <build_version.hpp>
 #include <af/util.h>
 
+// Returns the ArrayFire major, minor and patch version numbers via the out-parameters.
 af_err af_get_version(int *major, int *minor, int *patch) {
     *major = AF_VERSION_MAJOR;
     *minor = AF_VERSION_MINOR;
