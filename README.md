@@ -160,6 +160,8 @@ Community through
 Commits](https://github.com/arrayfire/arrayfire/wiki/Contributing-Code-to-ArrayFire),
 or [Governance](https://github.com/arrayfire/arrayfire/wiki/Governance).
 
+To run the CPU tests on a pull request's current head, comment `/cpu-tests` on it (see [CONTRIBUTING.md](CONTRIBUTING.md) for details).
+
 # Citations and Acknowledgements
 
 If you redistribute ArrayFire, please follow the terms established in [the
