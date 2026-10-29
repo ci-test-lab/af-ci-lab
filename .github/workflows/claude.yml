@@ -6,7 +6,9 @@ name: Claude
 # the default branch. Claude edits, commits and pushes in the working tree that the
 # action checks out at the workspace root; it builds and tests only with the trusted
 # ci.sh from a second checkout of the default branch (trusted/), which builds a copy
-# of the working tree without .git, in a container that gets no token.
+# of the working tree without .git, in a container that gets no token. It requests
+# the CPU or GPU tests only through the trusted request-tests.sh, which can post
+# nothing but such a request.
 #
 # Settings: variables AF_CI_CLAUDE, AF_CI_CLAUDE_BOT (the App's bot login, e.g.
 # arrayfire-claude[bot]) and AF_CI_CLAUDE_BOT_ID (its user ID); optionally
@@ -128,6 +130,6 @@ jobs:
             --model ${{ steps.model.outputs.model }}
             ${{ steps.model.outputs.effort && format('--effort {0}', steps.model.outputs.effort) || '' }}
             --max-turns 40
-            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(trusted/.github/scripts/ci.sh --docker *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(gh pr view *),Bash(gh run view * --log-failed)"
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(trusted/.github/scripts/ci.sh --docker *),Bash(trusted/.github/scripts/request-tests.sh *),Bash(git status *),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(gh pr view *),Bash(gh run view * --log-failed)"
             --disallowedTools "Edit(.github/**),Edit(trusted/**),Read(.git/**),Read(//proc/**),Read(//sys/**),Read(~/.*),Read(~/.*/**),Read(//home/runner/work/_temp/**),WebFetch,WebSearch,Bash(env),Bash(env *),Bash(printenv),Bash(printenv *),Bash(set),Bash(export),Bash(export -p),Bash(declare),Bash(declare *),Bash(typeset),Bash(typeset *),Bash(compgen *),Bash(ps *),Bash(strings *),Bash(xxd *),Bash(od *),Bash(git commit *-F*),Bash(git commit *--file*),Bash(git commit *--template*),Bash(git remote *),Bash(git config *),Bash(git ls-remote *),Bash(git var *),Bash(git credential *)"
-            --append-system-prompt "Working rules for ArrayFire: Reproduce and check CI failures only with trusted/.github/scripts/ci.sh --docker <job>, run from the workspace root, for example trusted/.github/scripts/ci.sh --docker lint or trusted/.github/scripts/ci.sh --docker linux-gcc-openblas; it builds a copy of your working tree, so git add new files first. Never run the build or the tests any other way, and never edit anything under .github/. After you push, comment /cpu-tests on the pull request to run the CPU tests. Comment /gpu-tests only when the change touches GPU code (the CUDA, OpenCL or oneAPI backends) and the CPU tests are green on the pushed commit; a maintainer approves every GPU run, so don't ask for it in comments."
+            --append-system-prompt "Working rules for ArrayFire: Reproduce and check CI failures only with trusted/.github/scripts/ci.sh --docker <job>, run from the workspace root, for example trusted/.github/scripts/ci.sh --docker lint or trusted/.github/scripts/ci.sh --docker linux-gcc-openblas; it builds a copy of your working tree, so git add new files first. Never run the build or the tests any other way, and never edit anything under .github/. After you push, run trusted/.github/scripts/request-tests.sh cpu to request the CPU tests on the pull request; that script is the only way to post a request. Request the GPU tests with trusted/.github/scripts/request-tests.sh gpu only when the change touches GPU code (the CUDA, OpenCL or oneAPI backends) and the CPU tests are green on the pushed commit; a maintainer approves every GPU run, so don't ask for it in comments."
