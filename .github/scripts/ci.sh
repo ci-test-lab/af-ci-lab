@@ -7,7 +7,9 @@
 # repository) with this repository's scripts and CI settings, so it can test any
 # commit. For the linux-cuda-gpu-* jobs, AF_CI_CUDA_VERSION (default 12.9) and
 # AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
-# architectures. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
+# architectures. A *-gpu-build job builds the tests into an archive, and its
+# *-gpu-test job runs them with the host's GPU (docker run --gpus all), with only
+# the libraries they need. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
 # tree's tracked files without .git instead of mounting the tree itself.
 # It must run on macOS's bash 3.2: the macOS job runs it on the host.
 #
@@ -35,6 +37,8 @@ linux-opencl                  ubuntu:24.04  --compiler gcc --blas openblas --ope
 linux-oneapi                  ubuntu:24.04  --compiler icx --blas mkl --opencl --oneapi 2025.3
 linux-cuda-gpu-build          ubuntu:24.04  --compiler gcc --cuda $cuda_version
 linux-cuda-gpu-test           ubuntu:24.04  --runtime --cuda $cuda_version
+linux-opencl-gpu-build        ubuntu:24.04  --compiler gcc --blas openblas --opencl
+linux-opencl-gpu-test         ubuntu:24.04  --runtime --opencl
 macos-arm64-clang-accelerate  -
 windows-msvc-openblas         -
 "
@@ -64,7 +68,8 @@ read -r _ image deps_args <<< "$spec"
 
 cd "$root"
 source=$(cd "${AF_CI_SOURCE_DIR:-$root}" && pwd)
-gpu_build=$source/build/ci-linux-cuda-gpu
+# A *-gpu-build job and its *-gpu-test job share build/ci-linux-<backend>-gpu.
+gpu_build=$source/build/ci-${job%-*}
 if [[ -n ${AF_CI_CLEAN_EXPORT:-} && -z $docker ]]; then
   echo "AF_CI_CLEAN_EXPORT needs --docker: a build on the host could reach the tree's credentials" >&2
   exit 2
@@ -84,7 +89,7 @@ if [[ -n $docker ]]; then
   # Docker's memory without one: about 2.5 GiB each for SYCL and 0.75 GiB for the
   # rest. Never more than the CPUs, nor 8, the most every job was measured with.
   # Jobs that compile nothing skip this.
-  if [[ -z ${CMAKE_BUILD_PARALLEL_LEVEL:-} && ! $job =~ ^(lint|docs|workflows|linux-cuda-gpu-test)$ ]]; then
+  if [[ -z ${CMAKE_BUILD_PARALLEL_LEVEL:-} && ! $job =~ ^(lint|docs|workflows|.*-gpu-test)$ ]]; then
     read -r cpus mib <<< "$(docker info --format '{{.NCPU}} {{.MemTotal}}')"
     mib=$((mib * 3 / 4 / 1048576))
     memory="3/4 of Docker's memory"
@@ -134,14 +139,15 @@ if [[ -n $docker ]]; then
   # The repository is mounted, so build trees land in build/ as usual; give them
   # and a ccache directory back to the calling user afterwards. A source tree from
   # elsewhere, and always the GPU jobs' one, is mounted at /src, with this
-  # repository read-only at /ci.
+  # repository read-only at /ci. The GPU tests get the GPU's compute libraries,
+  # CUDA's and OpenCL's.
   mounts=(-v "$root:/src")
   script=.github/scripts/ci.sh
-  if [[ $job == linux-cuda-gpu-* || $source != "$root" ]]; then
+  if [[ $job == *-gpu-* || $source != "$root" ]]; then
     mounts=(-v "$root:/ci:ro" -v "$source:/src" -e AF_CI_SOURCE_DIR=/src
             -e AF_CI_CUDA_VERSION -e AF_CI_CUDA_ARCHITECTURES)
     script=/ci/.github/scripts/ci.sh
-    [[ $job == *-test ]] && mounts+=(--gpus all)
+    [[ $job == *-test ]] && mounts+=(--gpus all -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
   fi
   # shellcheck disable=SC2086
   exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" ${lint_diff[@]+"${lint_diff[@]}"} -w /src \
@@ -153,7 +159,7 @@ if [[ -n $docker ]]; then
     bash "$script" "$job" "$(id -u):$(id -g)" "${AF_CI_CCACHE_DIR:-}"
 fi
 
-if [[ $job == linux-cuda-gpu-test ]] && ! nvidia-smi; then
+if [[ $job == *-gpu-test ]] && ! nvidia-smi; then
   echo "No NVIDIA GPU is visible, and $job needs one (docker run --gpus all)" >&2
   exit 1
 fi
@@ -173,11 +179,19 @@ fi
 
 # A source tree from elsewhere gets this repository's presets, which hold the CI
 # settings, so commits that predate them can be tested the same way.
-if [[ $source != "$root" && $job != linux-cuda-gpu-* ]]; then
+if [[ $source != "$root" && $job != *-gpu-* ]]; then
   cp "$root/CMakePresets.json" "$source/CMakePresets.json"
   echo "Building $source with the presets of $root"
 fi
 cd "$source"
+
+# Runs the tests of a *-gpu-build archive, unpacked at the path it was built at.
+gpu_tests() {
+  [[ -d $gpu_build ]] || tar -C "$source" --zstd -xf "$gpu_build.tar.zst"
+  OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$gpu_build" \
+    --timeout 900 --output-on-failure --no-tests=error \
+    --output-junit "$gpu_build/junit.xml" 2>&1 | tee "$gpu_build/ctest.log"
+}
 
 case $job in
   lint)
@@ -217,9 +231,11 @@ case $job in
       python3 "$test"
     done
     ;;
-  linux-cuda-gpu-build)
-    cmake -S "$source" -B "$gpu_build" -G Ninja -C "$scripts/linux-cuda-gpu.cmake" \
-      "-DCUDA_architecture_build_targets=${AF_CI_CUDA_ARCHITECTURES:-7.5;8.9}"
+  linux-cuda-gpu-build|linux-opencl-gpu-build)
+    settings=(-C "$scripts/${job%-build}.cmake")
+    [[ $job == linux-cuda-* ]] &&
+      settings+=("-DCUDA_architecture_build_targets=${AF_CI_CUDA_ARCHITECTURES:-7.5;8.9}")
+    cmake -S "$source" -B "$gpu_build" -G Ninja "${settings[@]}"
     cmake --build "$gpu_build"
     # The test job gets what the tests need, to unpack at the same path: test
     # programs, shared libraries, CTest files and test data.
@@ -244,10 +260,28 @@ case $job in
     else
       echo "Driver $driver supports CUDA $driver_cuda, enough for CUDA $cuda_version: native"
     fi
-    [[ -d $gpu_build ]] || tar -C "$source" --zstd -xf "$gpu_build.tar.zst"
-    OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$gpu_build" \
-      --timeout 900 --output-on-failure --no-tests=error \
-      --output-junit "$gpu_build/junit.xml" 2>&1 | tee "$gpu_build/ctest.log"
+    gpu_tests
+    ;;
+  linux-opencl-gpu-test)
+    # The container toolkit mounts the driver's OpenCL library with the compute
+    # capability, but only its versions from mid-2026 on also mount the ICD file
+    # through which the loader finds it.
+    icd=/etc/OpenCL/vendors/nvidia.icd
+    if ! grep -qs libnvidia-opencl.so.1 "$icd"; then
+      mkdir -p "${icd%/*}"
+      echo libnvidia-opencl.so.1 > "$icd"
+      echo "Registered libnvidia-opencl.so.1 in $icd"
+    fi
+    platforms=$(clinfo -l || true)
+    echo "OpenCL platforms (clinfo -l):"
+    echo "${platforms:-  none}"
+    if ! grep -q '^Platform #[0-9]*: NVIDIA' <<< "$platforms"; then
+      grep -q libnvidia-opencl.so.1 <<< "$(ldconfig -p)" ||
+        echo "The driver's OpenCL library libnvidia-opencl.so.1 isn't in the container." >&2
+      echo "No NVIDIA OpenCL platform, so the OpenCL tests can't use the GPU" >&2
+      exit 1
+    fi
+    AF_OPENCL_DEVICE_TYPE=GPU gpu_tests
     ;;
   *)
     cmake --workflow --preset "ci-$job"

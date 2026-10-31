@@ -78,7 +78,8 @@ if [[ -n $runtime ]]; then
   [[ -n $opencl ]] && packages+=(ocl-icd-libopencl1 clinfo libopenblas0 liblapacke)
 else
   [[ -n $opencl ]] && packages+=(ocl-icd-opencl-dev opencl-headers)
-  [[ -n $cuda_version ]] && packages+=(zstd)
+  # The GPU build jobs archive their tests with zstd.
+  [[ -n $cuda_version || -n $opencl ]] && packages+=(zstd)
 fi
 [[ $compiler == icx || $blas == mkl || -n $cuda_version ]] && packages+=(gnupg)
 
