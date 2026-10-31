@@ -34,7 +34,7 @@ linux-cuda                    ubuntu:24.04  --compiler gcc --cuda 12.9
 linux-opencl                  ubuntu:24.04  --compiler gcc --blas openblas --opencl
 linux-oneapi                  ubuntu:24.04  --compiler icx --blas mkl --opencl --oneapi 2025.3
 linux-cuda-gpu-build          ubuntu:24.04  --compiler gcc --cuda $cuda_version
-linux-cuda-gpu-test           ubuntu:24.04  --compiler gcc --cuda $cuda_version
+linux-cuda-gpu-test           ubuntu:24.04  --runtime --cuda $cuda_version
 macos-arm64-clang-accelerate  -
 windows-msvc-openblas         -
 "
