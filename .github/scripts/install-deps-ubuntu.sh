@@ -128,7 +128,7 @@ if [[ -n $cuda_version ]]; then
       "cuda-nvcc-$v" "cuda-cudart-dev-$v" "cuda-nvrtc-dev-$v" \
       "cuda-driver-dev-$v" "cuda-profiler-api-$v" "cuda-nvtx-$v" "cuda-nvprune-$v" \
       "libcublas-dev-$v" "libcufft-dev-$v" "libcusolver-dev-$v" "libcusparse-dev-$v" \
-      "libcurand-dev-$v" "libnvjitlink-$v"
+      "libcurand-dev-$v" "libnvjitlink-dev-$v"
     $sudo ln -sfn "/usr/local/cuda-$cuda_version" /usr/local/cuda
     /usr/local/cuda/bin/nvcc --version | tail -n 2
   fi
