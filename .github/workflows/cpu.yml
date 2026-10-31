@@ -189,23 +189,20 @@ jobs:
           path: ${{ env.UNDER_TEST }}build/ci-windows-msvc-openblas/junit.xml
           if-no-files-found: ignore
 
+  # Named without the matrix: GitHub never expands the matrix in a skipped job's
+  # name, which showed up as a check named "matrix.job", and appends each leg's
+  # values to a fixed name, as in "accelerators (linux-cuda)".
   accelerators:
-    name: ${{ matrix.job }}
+    name: accelerators
     if: >-
       vars.AF_CI_ACCELERATOR_BUILDS == 'true' &&
       (github.event_name == 'push' || inputs.accelerators)
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.timeout }}
+    timeout-minutes: ${{ matrix.job == 'linux-oneapi' && 150 || matrix.job == 'linux-cuda' && 90 || 60 }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - job: linux-cuda
-            timeout: 90
-          - job: linux-opencl
-            timeout: 60
-          - job: linux-oneapi
-            timeout: 150
+        job: [linux-cuda, linux-opencl, linux-oneapi]
     env:
       AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
       CCACHE_MAXSIZE: 1G
