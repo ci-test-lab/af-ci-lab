@@ -38,7 +38,8 @@ jobs:
       decision: ${{ steps.decide.outputs.decision }}
       command: ${{ steps.decide.outputs.command }}
       sha: ${{ steps.decide.outputs.sha }}
-      cuda: ${{ steps.decide.outputs.cuda }}
+      backends: ${{ steps.decide.outputs.backends }}
+      cuda-versions: ${{ steps.decide.outputs.cuda-versions }}
       accelerators: ${{ steps.decide.outputs.accelerators }}
       macos-windows: ${{ steps.decide.outputs.macos-windows }}
       reply: ${{ steps.decide.outputs.reply }}
@@ -52,6 +53,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           AF_CI_GPU_TESTS: ${{ vars.AF_CI_GPU_TESTS }}
           AF_CI_GPU_RUNNER: ${{ vars.AF_CI_GPU_RUNNER }}
+          AF_CI_CUDA_VERSIONS: ${{ vars.AF_CI_CUDA_VERSIONS }}
           AF_CI_ACCELERATOR_BUILDS: ${{ vars.AF_CI_ACCELERATOR_BUILDS }}
           AF_CI_CLAUDE_BOT: ${{ vars.AF_CI_CLAUDE_BOT }}
           AF_CI_GPU_AI_PER_PR_DAY: ${{ vars.AF_CI_GPU_AI_PER_PR_DAY }}
@@ -97,7 +99,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMMAND: ${{ needs.decide.outputs.command }}
           SHA: ${{ needs.decide.outputs.sha }}
-          CUDA: ${{ needs.decide.outputs.cuda }}
+          BACKENDS: ${{ needs.decide.outputs.backends }}
+          CUDA_VERSIONS: ${{ needs.decide.outputs.cuda-versions }}
           REPLY: ${{ needs.decide.outputs.reply }}
         run: python3 .github/scripts/test-requests.py accepted
 
@@ -120,7 +123,8 @@ jobs:
   gpu:
     needs: [decide, accepted]
     if: needs.decide.outputs.decision == 'accept' && needs.decide.outputs.command == 'gpu'
-    # One request per pull request at a time, as for the CPU tests.
+    # One request per pull request at a time, as for the CPU tests; all of its legs
+    # run together.
     concurrency:
       group: gpu-request-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -129,7 +133,8 @@ jobs:
     uses: ./.github/workflows/gpu.yml
     with:
       sha: ${{ needs.decide.outputs.sha }}
-      cuda: ${{ needs.decide.outputs.cuda }}
+      backends: ${{ needs.decide.outputs.backends }}
+      cuda-versions: ${{ needs.decide.outputs.cuda-versions }}
 
   report:
     needs: [decide, cpu, gpu]
@@ -150,8 +155,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMMAND: ${{ needs.decide.outputs.command }}
           SHA: ${{ needs.decide.outputs.sha }}
-          CUDA: ${{ needs.decide.outputs.cuda }}
+          BACKENDS: ${{ needs.decide.outputs.backends }}
+          CUDA_VERSIONS: ${{ needs.decide.outputs.cuda-versions }}
           RESULT: >-
             ${{ needs.decide.outputs.command == 'gpu' && needs.gpu.result || needs.cpu.result }}
           SUMMARY: ${{ needs.gpu.outputs.test-summary }}
+          REPORT: ${{ needs.gpu.outputs.test-report }}
         run: python3 .github/scripts/test-requests.py report

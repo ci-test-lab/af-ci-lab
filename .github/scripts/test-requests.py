@@ -2,13 +2,13 @@
 """Handles "/cpu-tests" and "/gpu-tests" requests on pull requests for test-requests.yml.
 
   test-requests.py decide     decide on the issue_comment event in GITHUB_EVENT_PATH and
-                              write decision, command, sha, cuda, accelerators,
-                              macos-windows and reply to GITHUB_OUTPUT
+                              write decision, command, sha, backends, cuda-versions,
+                              accelerators, macos-windows and reply to GITHUB_OUTPUT
   test-requests.py reply      post REPLY on the pull request
   test-requests.py accepted   set the pending COMMAND-tests status on SHA and post REPLY
   test-requests.py report     set the final status from RESULT and SUMMARY (the called
-                              workflow's result and, for GPU runs, its test summary)
-                              and comment
+                              workflow's result and, for GPU runs, its one-line test
+                              summary) and comment, adding REPORT (each GPU leg's result)
 
 The commit status is the result; in accepted and report a comment that fails is only a
 warning. A failed API call becomes an annotation of the run, which, unlike the job log,
@@ -30,10 +30,28 @@ import urllib.parse
 import urllib.request
 
 COMMANDS = {"cpu": re.compile(r"/cpu-tests(?:\s+(all))?"),
-            "gpu": re.compile(r"/gpu-tests(?:\s+cuda=(\d+\.\d+))?")}
+            "gpu": re.compile(r"/gpu-tests(?:\s+(cuda|opencl|all))?(?:\s+cuda=(\d+\.\d+))?")}
 USAGE = {"cpu": "Usage: `/cpu-tests`, or `/cpu-tests all` to add the CUDA, OpenCL and oneAPI builds.",
-         "gpu": "Usage: `/gpu-tests` or `/gpu-tests cuda=<major.minor>`, for example `/gpu-tests cuda=13.1`."}
-DEFAULT_CUDA = "12.9"  # gpu.yml's default
+         "gpu": "Usage: `/gpu-tests [cuda|opencl|all] [cuda=<major.minor>]`. Without `cuda`, `opencl` "
+                "or `all`, the changed files choose the backends; `cuda=13.4` tests CUDA 13.4 only, "
+                "and `all cuda=13.4` adds OpenCL."}
+DEFAULT_CUDA_VERSION = "12.9"  # without AF_CI_CUDA_VERSIONS
+BACKENDS = {"cuda": ("cuda",), "opencl": ("opencl",), "all": ("cuda", "opencl")}
+# The GPU backends a changed file can affect; the first matching rule wins, and a file
+# that matches none affects both. Markdown, the docs, CI, the CPU and oneAPI backends
+# and the examples (which the GPU builds skip) affect neither. Shared backend code,
+# the APIs, the headers, the tests, CMake and the dependency manifests affect both.
+FILE_RULES = [
+    (re.compile(r".*\.md|docs/.*|\.github/.*|examples/.*|src/backend/(cpu|oneapi)/.*|include/af/oneapi\.h"
+                r"|CMakeModules/(CMake\w*SYCL\w*|FindAF_MKL\.cmake)|LICENSES?(/.*)?"
+                r"|\.(gitignore|gitattributes|coveralls\.yml)"), ()),
+    (re.compile(r"src/backend/cuda/.*|include/af/cuda\.h|test/cuda\.cu"
+                r"|CMakeModules/(AFcuda_helpers\.cmake|select_compute_arch\.cmake|launch-nvcc\.in"
+                r"|FindcuDNN\.cmake)"), ("cuda",)),
+    (re.compile(r"src/backend/opencl/.*|include/af/opencl\.h|test/(ocl_\w*|interop_opencl_\w*)\.cpp"
+                r"|CMakeModules/(FindOpenCL|build_CLBlast|build_cl2hpp|build_clFFT)\.cmake"), ("opencl",)),
+]
+BACKEND_NAMES = {"cuda": "CUDA", "opencl": "OpenCL"}
 LIGHT_CHECKS = ("lint", "docs", "workflows")  # checks.yml, run on every push
 WRITE_ROLES = {"admin", "maintain", "write"}
 # Commenters who get an answer besides the pull request's author; others are
@@ -44,10 +62,36 @@ KNOWN = {"OWNER", "MEMBER", "COLLABORATOR"}
 ACTIONS_BOT = "github-actions[bot]"
 
 
-def decision(action, reason, reply="", command="", sha="", cuda="", accelerators=False,
-             macos_windows=False):
+def decision(action, reason, reply="", command="", sha="", backends="", cuda_versions="",
+             accelerators=False, macos_windows=False):
     return {"action": action, "reason": reason, "reply": reply, "command": command, "sha": sha,
-            "cuda": cuda, "accelerators": accelerators, "macos_windows": macos_windows}
+            "backends": backends, "cuda_versions": cuda_versions, "accelerators": accelerators,
+            "macos_windows": macos_windows}
+
+
+def affected(path):
+    """The GPU backends that a change to path can affect."""
+    for pattern, backends in FILE_RULES:
+        if pattern.fullmatch(path):
+            return backends
+    return ("cuda", "opencl")
+
+
+def select(files):
+    """The backends that the changed files affect, each with the first file that affects it."""
+    chosen = {}
+    for file in files:
+        for path in (file["filename"], file.get("previous_filename")):
+            for backend in affected(path) if path else ():
+                chosen.setdefault(backend, path)
+    return chosen
+
+
+def legs(backends, cuda_versions):
+    """The GPU runs, as "CUDA 12.9, CUDA 13.4 and OpenCL"."""
+    names = [f"CUDA {version}" for version in cuda_versions.split()] if "cuda" in backends.split() else []
+    names += ["OpenCL"] if "opencl" in backends.split() else []
+    return ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else "".join(names)
 
 
 def decide(event, settings, api, now):
@@ -81,7 +125,7 @@ def decide(event, settings, api, now):
         if not settings["gpu_runner"]:
             return reply("no-runner", "GPU tests can't run here: no GPU runner is configured.")
     match = COMMANDS[command].fullmatch(first)
-    if not match:
+    if not match or command == "gpu" and match.group(1) == "opencl" and match.group(2):
         return reply("usage", USAGE[command])
 
     writer = not is_bot and api.permission(login) in WRITE_ROLES
@@ -122,12 +166,42 @@ def decide(event, settings, api, now):
         if refusal:
             reason, text = refusal
             return reply(reason, f"Not starting GPU tests for `{sha}`: {text}")
-    cuda = match.group(1) or DEFAULT_CUDA
+
+    files = api.files(number)
+    chosen = select(files)
+    asked, version = match.group(1), match.group(2)
+    if asked or version:
+        backends = BACKENDS[asked or "cuda"]
+        why = "as asked"
+        if chosen:
+            why += "; the changed GPU code includes " + " and ".join(
+                f"`{path}` ({BACKEND_NAMES[backend]})" for backend, path in chosen.items())
+        elif files:
+            why += f", although no changed file affects the GPU backends (`{files[0]['filename']}` changed)"
+    elif chosen:
+        backends = tuple(backend for backend in ("cuda", "opencl") if backend in chosen)
+        why = "chosen by the changed files: " + " and ".join(
+            f"{BACKEND_NAMES[backend]} for `{chosen[backend]}`" for backend in backends)
+    else:
+        example = f" (`{files[0]['filename']}` changed)" if files else ""
+        return reply("no-gpu-changes",
+                     f"Not starting GPU tests for `{sha}`: no changed file affects the CUDA or OpenCL "
+                     f"backends{example}. Comment `/gpu-tests all` to run them anyway.")
+
+    cuda_versions = ""
+    if "cuda" in backends:
+        versions = [version] if version else settings["cuda_versions"].split() or [DEFAULT_CUDA_VERSION]
+        if not all(re.fullmatch(r"\d+\.\d+", v) for v in versions):
+            return reply("bad-cuda-versions",
+                         "GPU tests can't run here: the repository variable AF_CI_CUDA_VERSIONS must "
+                         f"list CUDA versions like `12.9 13.4`, not `{settings['cuda_versions']}`.")
+        cuda_versions = " ".join(dict.fromkeys(versions))
+    backends = " ".join(backends)
     return decision("accept", "accepted",
-                    f"GPU tests (CUDA {cuda}) requested by @{login} for `{sha}`, the head of this "
-                    "pull request now. The build runs first; the GPU job then waits for a "
-                    "maintainer's approval. Later pushes are not part of this run.",
-                    command, sha, cuda)
+                    f"GPU tests requested by @{login} for `{sha}`, the head of this pull request "
+                    f"now: {legs(backends, cuda_versions)}, {why}. The builds run first; the GPU "
+                    "jobs then wait for one maintainer approval. Later pushes are not part of this run.",
+                    command, sha, backends, cuda_versions)
 
 
 def latest_light_checks(api, sha):
@@ -254,6 +328,16 @@ class GitHub:
     def run_jobs(self, run_id):
         return self.call("GET", f"actions/runs/{run_id}/jobs?per_page=100")["jobs"]
 
+    def files(self, number):
+        """The pull request's changed files; GitHub lists at most 3000."""
+        files = []
+        for page in range(1, 31):
+            batch = self.call("GET", f"pulls/{number}/files?per_page=100&page={page}")
+            files += batch
+            if len(batch) < 100:
+                break
+        return files
+
     def comment(self, number, body, level="error"):
         self.call("POST", f"issues/{number}/comments", {"body": body}, level)
 
@@ -303,6 +387,10 @@ class Fixtures:
         self.calls.append(f"jobs {run_id}")
         return self.answers.get("jobs", {}).get(str(run_id), [])
 
+    def files(self, number):
+        self.calls.append(f"files {number}")
+        return self.answers.get("files", [])
+
     def comment(self, number, body, level="error"):
         self.fail("comment", "POST", f"issues/{number}/comments", level)
         print(f"[fixture] comment on #{number}:\n{body}")
@@ -329,6 +417,7 @@ def settings_from_env():
             "bot": os.environ.get("AF_CI_CLAUDE_BOT", ""),
             "per_pr_day": int(os.environ.get("AF_CI_GPU_AI_PER_PR_DAY") or 2),
             "per_day": int(os.environ.get("AF_CI_GPU_AI_PER_DAY") or 6),
+            "cuda_versions": os.environ.get("AF_CI_CUDA_VERSIONS", ""),
             "run_id": os.environ.get("GITHUB_RUN_ID", "")}
 
 
@@ -342,7 +431,7 @@ def write_outputs(values):
 def final_state(command, result, summary):
     """The commit status state and text for the called workflow's result."""
     if result == "success" and command == "gpu" and not summary:
-        return "error", "did not run: gpu.yml's test job was skipped"
+        return "error", "did not run: gpu.yml's jobs were skipped"
     if result == "success":
         return "success", f"passed: {summary}" if summary else "passed"
     if result == "failure":
@@ -375,13 +464,15 @@ def main(command):
     if command == "decide":
         result = decide(event, settings_from_env(), api, datetime.datetime.now(datetime.timezone.utc))
         print(f"decision: {result['action']} ({result['reason']}) command={result['command'] or '-'} "
-              f"sha={result['sha'] or '-'} cuda={result['cuda'] or '-'} "
+              f"sha={result['sha'] or '-'} backends={result['backends'] or '-'} "
+              f"cuda-versions={result['cuda_versions'] or '-'} "
               f"accelerators={str(result['accelerators']).lower()} "
               f"macos-windows={str(result['macos_windows']).lower()}")
         if result["reply"]:
             print(f"reply: {result['reply']}")
         write_outputs({"decision": result["action"], "reason": result["reason"],
-                       "command": result["command"], "sha": result["sha"], "cuda": result["cuda"],
+                       "command": result["command"], "sha": result["sha"],
+                       "backends": result["backends"], "cuda-versions": result["cuda_versions"],
                        "accelerators": str(result["accelerators"]).lower(),
                        "macos-windows": str(result["macos_windows"]).lower(),
                        "reply": result["reply"]})
@@ -390,7 +481,8 @@ def main(command):
     elif command == "accepted":
         kind, sha = os.environ["COMMAND"], os.environ["SHA"]
         if kind == "gpu":
-            text = f"GPU tests (CUDA {os.environ['CUDA']}): building, then waiting for a maintainer's approval"
+            text = (f"GPU tests ({legs(os.environ['BACKENDS'], os.environ['CUDA_VERSIONS'])}): "
+                    "building, then waiting for a maintainer's approval")
         else:
             text = "CPU tests queued"
         api.set_status(sha, f"{kind}-tests", "pending", text, run_url)
@@ -398,9 +490,12 @@ def main(command):
     elif command == "report":
         kind, sha = os.environ["COMMAND"], os.environ["SHA"]
         state, text = final_state(kind, os.environ.get("RESULT", ""), os.environ.get("SUMMARY", ""))
-        what = f"GPU tests (CUDA {os.environ['CUDA']})" if kind == "gpu" else "CPU tests"
+        what = (f"GPU tests ({legs(os.environ['BACKENDS'], os.environ['CUDA_VERSIONS'])})"
+                if kind == "gpu" else "CPU tests")
+        report = os.environ.get("REPORT", "").strip()
         api.set_status(sha, f"{kind}-tests", state, f"{what} {text}", run_url)
-        comment_after_status(api, number, f"{what} of `{sha}` {text} [Run]({run_url})")
+        comment_after_status(api, number, f"{what} of `{sha}` {text} [Run]({run_url})"
+                             + (f"\n\n{report}" if report else ""))
     else:
         sys.exit(f"unknown command: {command}")
 

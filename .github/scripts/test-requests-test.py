@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Fixture tests of the "/cpu-tests" and "/gpu-tests" decisions in test-requests.py, and of
-how its commands handle failed API calls.
+"""Fixture tests of the "/cpu-tests" and "/gpu-tests" decisions in test-requests.py, of how
+its commands handle failed API calls and report GPU runs, and of cuda-compat.sh's choice
+between the host's driver and NVIDIA's forward-compatibility package.
 
 Each decision case is an issue_comment event plus the API answers; the test prints the
 expected and the actual decision and fails if any case differs. The command cases run
@@ -23,6 +24,7 @@ import urllib.request
 
 sys.dont_write_bytecode = True
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-requests.py")
+CUDA_COMPAT = os.path.join(os.path.dirname(SCRIPT), "cuda-compat.sh")
 spec = importlib.util.spec_from_file_location("test_requests", SCRIPT)
 test_requests = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(test_requests)
@@ -34,7 +36,7 @@ HEAD = "cd211d5b8660761d1665be52ace5ff680856ba06"
 STALE_HEAD = "0" * 40
 PR = 3715
 SETTINGS = {"gpu_tests": "true", "gpu_runner": "gpu-t4", "accelerator_builds": "true", "bot": BOT,
-            "per_pr_day": 2, "per_day": 6, "run_id": "900"}
+            "per_pr_day": 2, "per_day": 6, "cuda_versions": "", "run_id": "900"}
 ASSOCIATION = {"maintainer-a": "MEMBER", "admin-b": "OWNER", "writer-c": "COLLABORATOR",
                "reader-d": "COLLABORATOR", "triager-e": "COLLABORATOR", BOT: "NONE",
                "contributor-g": "CONTRIBUTOR", "github-actions[bot]": "NONE"}
@@ -49,12 +51,15 @@ def event(login, body="/gpu-tests", author="maintainer-a", association=None, pul
                         "author_association": association or ASSOCIATION.get(login, "NONE")}}
 
 
-def run(run_id, hours_ago, pr, accepted=True, command="/gpu-tests"):
+def run(run_id, hours_ago, pr, accepted=True, command="/gpu-tests", legs=()):
+    """A request run in the history; legs are the GPU legs it ran, each a build and a test job."""
     created = (NOW - datetime.timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return ({"id": run_id, "actor": {"login": BOT}, "created_at": created,
              "display_title": f"{command} on #{pr} by {BOT}"},
             [{"name": "decide", "conclusion": "success"},
-             {"name": "accepted", "conclusion": "success" if accepted else "skipped"}])
+             {"name": "accepted", "conclusion": "success" if accepted else "skipped"}]
+            + [{"name": f"gpu / {job} ({leg})", "conclusion": "success"}
+               for leg in legs for job in ("build", "test")])
 
 
 def comment_run(run_id, pr):
@@ -74,8 +79,23 @@ def status(state, creator="github-actions[bot]", context="cpu-tests"):
     return {"context": context, "state": state, "creator": {"login": creator}}
 
 
-def answers(author="maintainer-a", check_runs=None, statuses=None, runs=()):
-    """API answers; statuses are newest first, and by default CPU tests passed on HEAD."""
+def changed(*paths, renamed_from=None):
+    """The pull request's changed files, as GitHub lists them."""
+    files = [{"filename": path, "status": "modified"} for path in paths]
+    if renamed_from:
+        files[0].update(status="renamed", previous_filename=renamed_from)
+    return files
+
+
+CUDA_FILE = "src/backend/cuda/jit.cpp"
+OPENCL_FILE = "src/backend/opencl/jit.cpp"
+SHARED_HEADER = "include/af/array.h"
+DOCS = ("docs/pages/install.md", "README.md")
+
+
+def answers(author="maintainer-a", check_runs=None, statuses=None, runs=(), files=None):
+    """API answers; statuses are newest first, by default CPU tests passed on HEAD, and the
+    pull request changes one file of the CUDA backend."""
     return {"permissions": {"maintainer-a": "maintain", "admin-b": "admin", "writer-c": "write",
                             "reader-d": "read", "triager-e": "triage"},
             "pull": {"number": PR, "head": {"sha": HEAD}, "user": {"login": author}},
@@ -83,7 +103,8 @@ def answers(author="maintainer-a", check_runs=None, statuses=None, runs=()):
                            STALE_HEAD: checks()},
             "statuses": {HEAD: [status("success"), status("pending")] if statuses is None else statuses,
                          STALE_HEAD: [status("success")]},
-            "runs": [r for r, _ in runs], "jobs": {str(r["id"]): jobs for r, jobs in runs}}
+            "runs": [r for r, _ in runs], "jobs": {str(r["id"]): jobs for r, jobs in runs},
+            "files": changed(CUDA_FILE) if files is None else files}
 
 
 def red_after_green():
@@ -92,16 +113,19 @@ def red_after_green():
         {"id": 5, "name": "lint", "app": {"slug": "github-actions"}, "conclusion": "success"}]
 
 
-def accept(command, cuda="", accelerators=False, macos_windows=False):
-    return ("accept", "accepted", command, HEAD, cuda, accelerators, macos_windows)
+def accept(command, backends="", cuda_versions="", accelerators=False, macos_windows=False):
+    return ("accept", "accepted", command, HEAD, backends, cuda_versions, accelerators, macos_windows)
 
 
 def refuse(command, reason):
-    return ("reply", reason, command, "", "", False, False)
+    return ("reply", reason, command, "", "", "", False, False)
 
 
 def ignore(reason, command=""):
-    return ("ignore", reason, command, "", "", False, False)
+    return ("ignore", reason, command, "", "", "", False, False)
+
+
+GPU_CALLS = ["permission maintainer-a", f"pull {PR}", f"files {PR}"]
 
 
 CASES = [
@@ -142,9 +166,9 @@ CASES = [
      answers(), {}, refuse("cpu", "usage"), []),
 
     # /gpu-tests: writers
-    ("gpu: maintainer is accepted", event("maintainer-a"), answers(), {}, accept("gpu", "12.9"), None),
+    ("gpu: maintainer is accepted", event("maintainer-a"), answers(), {}, accept("gpu", "cuda", "12.9"), None),
     ("gpu: admin with cuda=13.1 is accepted", event("admin-b", "/gpu-tests cuda=13.1\nthanks"),
-     answers(), {}, accept("gpu", "13.1"), None),
+     answers(), {}, accept("gpu", "cuda", "13.1"), None),
     # /gpu-tests: the author without write access, and other non-writers
     ("gpu: author without write access is refused",
      event("contributor-g", author="contributor-g"), answers(author="contributor-g"), {},
@@ -157,9 +181,9 @@ CASES = [
     # /gpu-tests: the Claude bot
     ("gpu: Claude bot is accepted when eligible", event(BOT),
      answers(runs=[run(101, 3, PR), run(102, 5, 3700), run(103, 8, 3701), run(104, 1, PR, accepted=False)]),
-     {}, accept("gpu", "12.9"), None),
+     {}, accept("gpu", "cuda", "12.9"), None),
     ("gpu: Claude bot is accepted on its own PR", event(BOT, author=BOT), answers(author=BOT), {},
-     accept("gpu", "12.9"), None),
+     accept("gpu", "cuda", "12.9"), None),
     ("gpu: Claude bot is refused when its CPU tests are red", event(BOT),
      answers(statuses=[status("failure"), status("success"), status("pending")]), {},
      refuse("gpu", "cpu-not-green"), None),
@@ -176,18 +200,26 @@ CASES = [
     ("gpu: Claude bot is refused over the per-PR quota", event(BOT),
      answers(runs=[run(101, 2, PR), run(102, 20, PR)]), {}, refuse("gpu", "pr-quota"), None),
     ("gpu: per-PR quota counts only the last 24 h", event(BOT),
-     answers(runs=[run(101, 2, PR), run(102, 25, PR)]), {}, accept("gpu", "12.9"), None),
+     answers(runs=[run(101, 2, PR), run(102, 25, PR)]), {}, accept("gpu", "cuda", "12.9"), None),
     ("gpu: plain comments by the bot are not requests", event(BOT),
-     answers(runs=[comment_run(200 + i, PR) for i in range(5)]), {}, accept("gpu", "12.9"), None),
+     answers(runs=[comment_run(200 + i, PR) for i in range(5)]), {}, accept("gpu", "cuda", "12.9"), None),
+    ("gpu: a request that ran several legs counts once", event(BOT),
+     answers(runs=[run(101, 2, PR, legs=("CUDA 12.9", "CUDA 13.4", "OpenCL"))]), {},
+     accept("gpu", "cuda", "12.9"), None),
+    ("gpu: two requests with several legs reach the per-PR quota", event(BOT),
+     answers(runs=[run(101 + i, 2 + i, PR, legs=("CUDA 12.9", "OpenCL")) for i in range(2)]), {},
+     refuse("gpu", "pr-quota"), None),
+    ("gpu: Claude bot's request on a docs-only change starts nothing", event(BOT),
+     answers(files=changed(*DOCS)), {}, refuse("gpu", "no-gpu-changes"), None),
     ("gpu: CPU requests don't count against the GPU quota", event(BOT),
      answers(runs=[run(300 + i, 1, PR, command="/cpu-tests") for i in range(5)]), {},
-     accept("gpu", "12.9"), None),
+     accept("gpu", "cuda", "12.9"), None),
     ("gpu: Claude bot is refused over the daily quota", event(BOT),
      answers(runs=[run(100 + i, i + 1, 3000 + i) for i in range(6)]), {}, refuse("gpu", "daily-quota"),
      None),
     ("gpu: daily quota follows AF_CI_GPU_AI_PER_DAY", event(BOT),
      answers(runs=[run(100 + i, i + 1, 3000 + i) for i in range(6)]), {"per_day": 10},
-     accept("gpu", "12.9"), None),
+     accept("gpu", "cuda", "12.9"), None),
     ("gpu: Claude bot is refused on an external contributor's PR", event(BOT),
      answers(author="outsider-f"), {}, refuse("gpu", "external-author"), None),
     ("gpu: a user named like the bot is not the bot", event("arrayfire-claude"), answers(), {},
@@ -201,6 +233,89 @@ CASES = [
      answers(), {}, refuse("gpu", "usage"), []),
     ("gpu: unknown argument gets the usage", event("maintainer-a", "/gpu-tests now please"), answers(),
      {}, refuse("gpu", "usage"), []),
+    ("gpu: `opencl` with a CUDA version gets the usage", event("maintainer-a", "/gpu-tests opencl cuda=13.4"),
+     answers(), {}, refuse("gpu", "usage"), []),
+    ("gpu: an unknown backend gets the usage", event("maintainer-a", "/gpu-tests both"), answers(), {},
+     refuse("gpu", "usage"), []),
+    ("gpu: a backend in capitals gets the usage", event("maintainer-a", "/gpu-tests CUDA"), answers(), {},
+     refuse("gpu", "usage"), []),
+    ("gpu: a major-only version gets the usage", event("maintainer-a", "/gpu-tests cuda=13"), answers(), {},
+     refuse("gpu", "usage"), []),
+    ("gpu: the version before the backend gets the usage", event("maintainer-a", "/gpu-tests cuda=13.4 all"),
+     answers(), {}, refuse("gpu", "usage"), []),
+    ("gpu: two backends get the usage", event("maintainer-a", "/gpu-tests cuda opencl"), answers(), {},
+     refuse("gpu", "usage"), []),
+    ("gpu: two versions get the usage", event("maintainer-a", "/gpu-tests cuda=12.9 cuda=13.4"), answers(),
+     {}, refuse("gpu", "usage"), []),
+
+    # /gpu-tests forms: an explicit backend or version runs whatever the files are
+    ("gpu form: `/gpu-tests cuda` runs CUDA with the default versions", event("maintainer-a", "/gpu-tests cuda"),
+     answers(files=changed(OPENCL_FILE)), {}, accept("gpu", "cuda", "12.9"), GPU_CALLS),
+    ("gpu form: `/gpu-tests opencl` runs OpenCL only", event("maintainer-a", "/gpu-tests opencl"),
+     answers(), {}, accept("gpu", "opencl"), GPU_CALLS),
+    ("gpu form: `/gpu-tests all` runs CUDA and OpenCL", event("maintainer-a", "/gpu-tests all"),
+     answers(), {}, accept("gpu", "cuda opencl", "12.9"), GPU_CALLS),
+    ("gpu form: `/gpu-tests cuda=13.4` runs CUDA 13.4 only", event("maintainer-a", "/gpu-tests cuda=13.4"),
+     answers(files=changed(SHARED_HEADER)), {"cuda_versions": "12.9 13.4"}, accept("gpu", "cuda", "13.4"),
+     GPU_CALLS),
+    ("gpu form: `/gpu-tests cuda cuda=13.4` runs CUDA 13.4", event("maintainer-a", "/gpu-tests cuda cuda=13.4"),
+     answers(), {}, accept("gpu", "cuda", "13.4"), GPU_CALLS),
+    ("gpu form: `/gpu-tests all cuda=13.4` runs CUDA 13.4 and OpenCL",
+     event("maintainer-a", "/gpu-tests all cuda=13.4"), answers(), {"cuda_versions": "12.9"},
+     accept("gpu", "cuda opencl", "13.4"), GPU_CALLS),
+    ("gpu form: an explicit request runs on a docs-only pull request",
+     event("maintainer-a", "/gpu-tests all"), answers(files=changed(*DOCS)), {},
+     accept("gpu", "cuda opencl", "12.9"), GPU_CALLS),
+    ("gpu form: extra spaces between the words are fine", event("maintainer-a", "/gpu-tests   all   cuda=13.4  "),
+     answers(), {}, accept("gpu", "cuda opencl", "13.4"), GPU_CALLS),
+
+    # /gpu-tests without a backend: the changed files choose
+    ("gpu files: a docs-only change gets a reply and starts nothing", event("maintainer-a"),
+     answers(files=changed(*DOCS)), {}, refuse("gpu", "no-gpu-changes"), GPU_CALLS),
+    ("gpu files: CI, the CPU and oneAPI backends and the examples start nothing", event("maintainer-a"),
+     answers(files=changed(".github/workflows/gpu.yml", "src/backend/cpu/jit.cpp", "src/backend/oneapi/jit.cpp",
+                           "examples/helloworld/helloworld.cpp", "include/af/oneapi.h", "LICENSE")), {},
+     refuse("gpu", "no-gpu-changes"), GPU_CALLS),
+    ("gpu files: a pull request without changed files starts nothing", event("maintainer-a"),
+     answers(files=[]), {}, refuse("gpu", "no-gpu-changes"), GPU_CALLS),
+    ("gpu files: a CUDA file runs CUDA with the default versions", event("maintainer-a"),
+     answers(files=changed(CUDA_FILE)), {}, accept("gpu", "cuda", "12.9"), GPU_CALLS),
+    ("gpu files: an OpenCL file runs OpenCL", event("maintainer-a"), answers(files=changed(OPENCL_FILE)), {},
+     accept("gpu", "opencl"), GPU_CALLS),
+    ("gpu files: a shared header runs both", event("maintainer-a"), answers(files=changed(SHARED_HEADER)), {},
+     accept("gpu", "cuda opencl", "12.9"), GPU_CALLS),
+    ("gpu files: a mixed list runs both, each for its file", event("maintainer-a"),
+     answers(files=changed(DOCS[0], OPENCL_FILE, ".github/workflows/gpu.yml", CUDA_FILE)), {},
+     accept("gpu", "cuda opencl", "12.9"), GPU_CALLS),
+    ("gpu files: CUDA's tests and CMake helpers run CUDA", event("maintainer-a"),
+     answers(files=changed("test/cuda.cu", "CMakeModules/select_compute_arch.cmake", "include/af/cuda.h")), {},
+     accept("gpu", "cuda", "12.9"), GPU_CALLS),
+    ("gpu files: OpenCL's tests and CMake helpers run OpenCL", event("maintainer-a"),
+     answers(files=changed("test/ocl_ext_context.cpp", "CMakeModules/build_clFFT.cmake")), {},
+     accept("gpu", "opencl"), GPU_CALLS),
+    ("gpu files: shared backend code, the APIs, CMake and manifests run both", event("maintainer-a"),
+     answers(files=changed("src/backend/common/jit/Node.cpp", "src/api/c/data.cpp", "CMakeLists.txt",
+                           "vcpkg.json", "test/arrayfire_test.cpp")), {},
+     accept("gpu", "cuda opencl", "12.9"), GPU_CALLS),
+    ("gpu files: a source file renamed out of the CUDA backend runs CUDA", event("maintainer-a"),
+     answers(files=changed("src/backend/cpu/moved.cpp", renamed_from="src/backend/cuda/moved.cpp")), {},
+     accept("gpu", "cuda", "12.9"), GPU_CALLS),
+    ("gpu files: Markdown in a backend directory starts nothing", event("maintainer-a"),
+     answers(files=changed("src/backend/cuda/README.md")), {}, refuse("gpu", "no-gpu-changes"), GPU_CALLS),
+
+    # CUDA versions: AF_CI_CUDA_VERSIONS, or 12.9 without it
+    ("gpu versions: AF_CI_CUDA_VERSIONS lists every version to run", event("maintainer-a"),
+     answers(), {"cuda_versions": "12.9 13.4"}, accept("gpu", "cuda", "12.9 13.4"), GPU_CALLS),
+    ("gpu versions: AF_CI_CUDA_VERSIONS with both backends", event("maintainer-a", "/gpu-tests all"),
+     answers(), {"cuda_versions": "12.9 13.4"}, accept("gpu", "cuda opencl", "12.9 13.4"), GPU_CALLS),
+    ("gpu versions: repeats and extra spaces in AF_CI_CUDA_VERSIONS are dropped", event("maintainer-a"),
+     answers(), {"cuda_versions": " 13.4  12.9 13.4 "}, accept("gpu", "cuda", "13.4 12.9"), GPU_CALLS),
+    ("gpu versions: a blank AF_CI_CUDA_VERSIONS means 12.9", event("maintainer-a"),
+     answers(), {"cuda_versions": "  "}, accept("gpu", "cuda", "12.9"), GPU_CALLS),
+    ("gpu versions: a malformed AF_CI_CUDA_VERSIONS is refused", event("maintainer-a"),
+     answers(), {"cuda_versions": "12.9,13.4"}, refuse("gpu", "bad-cuda-versions"), GPU_CALLS),
+    ("gpu versions: OpenCL alone doesn't need AF_CI_CUDA_VERSIONS", event("maintainer-a", "/gpu-tests opencl"),
+     answers(), {"cuda_versions": "latest"}, accept("gpu", "opencl"), GPU_CALLS),
 
     # Comments that are not requests
     ("github-actions[bot] comment is ignored", event("github-actions[bot]"), answers(), {},
@@ -294,9 +409,10 @@ def permission_not_found():
     return actual == expected
 
 
-def run_command(command, fail):
+def run_command(command, fail, env=None):
     """Runs test-requests.py <command> on fixtures, as the workflow's jobs run it; fail maps a
-    write (comment, set_status) to the HTTP status and message it fails with."""
+    write (comment, set_status) to the HTTP status and message it fails with, and env replaces
+    the jobs' environment variables."""
     fixtures = {"fail": {name: {"status": code, "body": {"message": message}}
                          for name, (code, message) in fail.items()}}
     with tempfile.TemporaryDirectory() as tmp:
@@ -310,16 +426,22 @@ def run_command(command, fail):
             env={"PATH": os.environ.get("PATH", ""), "ACT": "true",
                  "AF_CI_REQUEST_FIXTURES": files["fixtures"], "GITHUB_EVENT_PATH": files["event"],
                  "GITHUB_REPOSITORY": "arrayfire/arrayfire", "GITHUB_RUN_ID": "900",
-                 "COMMAND": "cpu", "SHA": HEAD, "CUDA": "", "REPLY": "CPU tests requested.",
-                 "RESULT": "success", "SUMMARY": ""})
+                 "COMMAND": "cpu", "SHA": HEAD, "BACKENDS": "", "CUDA_VERSIONS": "",
+                 "REPLY": "CPU tests requested.", "RESULT": "success", "SUMMARY": "", "REPORT": "",
+                 **(env or {})})
     return process.returncode, process.stdout + process.stderr
 
 
 FORBIDDEN = (403, "Resource not accessible by integration")
 COMMENT_FAILED = f"GitHub API POST issues/{PR}/comments failed: HTTP 403: Resource not accessible by integration"
 STATUS_FAILED = f"GitHub API POST statuses/{HEAD} failed: HTTP 403: Resource not accessible by integration"
+GPU_RUN = {"COMMAND": "gpu", "BACKENDS": "cuda opencl", "CUDA_VERSIONS": "12.9 13.4",
+           "REPLY": "GPU tests requested."}
+GPU_SUMMARY = "CUDA 12.9: 132 of 132 passed; CUDA 13.4: build failed; OpenCL: 126 of 128 passed"
+GPU_REPORT = ("- CUDA 12.9: 132 of 132 passed\n- CUDA 13.4: build failed\n"
+              "- OpenCL: 126 of 128 passed; failed: test_jit_opencl, test_fft_opencl")
 COMMAND_CASES = [
-    # name, command, failing writes, exits with 0, printed, not printed
+    # name, command, failing writes, exits with 0, printed, not printed[, environment]
     ("accepted: sets the pending status and comments", "accepted", {}, True,
      [f"[fixture] status cpu-tests=pending on {HEAD}", f"[fixture] comment on #{PR}"], ["::"]),
     ("accepted: a failed comment is a warning; the status stays and the tests go on", "accepted",
@@ -336,14 +458,27 @@ COMMAND_CASES = [
     ("reply: comments", "reply", {}, True, [f"[fixture] comment on #{PR}:\nCPU tests requested."], ["::"]),
     ("reply: a failed comment fails the job", "reply", {"comment": FORBIDDEN}, False,
      [f"::error::{COMMENT_FAILED}"], ["[fixture] comment", "::warning::"]),
+    ("accepted: the GPU status names every leg", "accepted", {}, True,
+     [f"[fixture] status gpu-tests=pending on {HEAD}: GPU tests (CUDA 12.9, CUDA 13.4 and OpenCL): "
+      "building, then waiting for a maintainer's approval"], ["::"], GPU_RUN),
+    ("report: every GPU leg is in the status and the comment", "report", {}, True,
+     [f"[fixture] status gpu-tests=failure on {HEAD}: GPU tests (CUDA 12.9, CUDA 13.4 and OpenCL) failed: "
+      "CUDA 12.9: 132 of 132 passed; CUDA 13.4: build failed; OpenCL: 126 of 128",
+      f"[fixture] comment on #{PR}:\nGPU tests (CUDA 12.9, CUDA 13.4 and OpenCL) of `{HEAD}` failed: "
+      f"{GPU_SUMMARY} [Run](", f"\n\n{GPU_REPORT}"], ["::"],
+     {**GPU_RUN, "RESULT": "failure", "SUMMARY": GPU_SUMMARY, "REPORT": GPU_REPORT}),
+    ("report: GPU jobs that were all skipped are an error", "report", {}, True,
+     [f"[fixture] status gpu-tests=error on {HEAD}: GPU tests (CUDA 12.9) did not run: gpu.yml's jobs "
+      "were skipped"], ["::"], {**GPU_RUN, "BACKENDS": "cuda", "CUDA_VERSIONS": "12.9"}),
 ]
 
 
-def command_case(name, command, fail, succeeds, printed, not_printed):
-    code, output = run_command(command, fail)
+def command_case(name, command, fail, succeeds, printed, not_printed, env=None):
+    code, output = run_command(command, fail, env)
     ok = ((code == 0) == succeeds and all(text in output for text in printed)
           and not any(text in output for text in not_printed))
-    shown = [line for line in output.splitlines() if line.startswith(("::", "[fixture]", "Not commenting"))]
+    shown = [line for line in output.splitlines()
+             if line.startswith(("::", "[fixture]", "Not commenting", "- "))]
     print(f"{'ok  ' if ok else 'FAIL'} {name}\n"
           f"     expected: exit {'0' if succeeds else 'non-zero'}\n"
           f"     actual:   exit {code}"
@@ -351,10 +486,40 @@ def command_case(name, command, fail, succeeds, printed, not_printed):
     return ok
 
 
+# nvidia-smi's header with the CUDA version the driver supports: "CUDA Version" before
+# driver 600, "CUDA UMD Version" from then on (this one is the RTX 4070 Ti's under WSL).
+SMI_12_8 = "| NVIDIA-SMI 570.124.06   Driver Version: 570.124.06   CUDA Version: 12.8     |"
+SMI_13_4 = "| NVIDIA-SMI 615.78.02    KMD Version: 617.14    CUDA UMD Version: 13.4     |"
+SMI_13_6 = "| NVIDIA-SMI 620.10.01    KMD Version: 620.10.01    CUDA UMD Version: 13.6     |"
+COMPAT_CASES = [
+    # name, nvidia-smi output, toolkit, exit code, printed
+    ("compat: a 12.8 driver with the 12.9 toolkit needs the compat package", SMI_12_8, "12.9", 0, "compat 12.8"),
+    ("compat: a 13.4 driver with the 13.4 toolkit runs natively", SMI_13_4, "13.4", 0, "native 13.4"),
+    ("compat: a 13.6 driver with the 12.9 toolkit runs natively", SMI_13_6, "12.9", 0, "native 13.6"),
+    ("compat: a 13.4 driver with the 12.9 toolkit runs natively", SMI_13_4, "12.9", 0, "native 13.4"),
+    ("compat: a 12.8 driver with the 13.4 toolkit needs the compat package", SMI_12_8, "13.4", 0, "compat 12.8"),
+    ("compat: nvidia-smi without a CUDA version is an error", "| NVIDIA-SMI 570.124.06 |", "12.9", 1, ""),
+    ("compat: a toolkit that isn't major.minor is a usage error", SMI_13_4, "13", 2, ""),
+]
+
+
+def compat_case(name, smi, toolkit, code, printed):
+    process = subprocess.run(["bash", CUDA_COMPAT, toolkit], input=f"Sat Oct 31 2026\n{smi}\n",
+                             capture_output=True, text=True, timeout=60)
+    actual = (process.returncode, process.stdout.strip())
+    ok = actual == (code, printed)
+    print(f"{'ok  ' if ok else 'FAIL'} {name}\n"
+          f"     expected: exit {code}, {printed or 'nothing'}\n"
+          f"     actual:   exit {actual[0]}, {actual[1] or 'nothing'}"
+          + (f"\n     stderr: {process.stderr.strip()}" if process.stderr.strip() else ""))
+    return ok
+
+
 def show(values):
-    action, reason, command, sha, cuda, accelerators, macos_windows = values
-    return (f"{action} {reason} command={command or '-'} sha={sha or '-'} cuda={cuda or '-'} "
-            f"accelerators={str(accelerators).lower()} macos-windows={str(macos_windows).lower()}")
+    action, reason, command, sha, backends, cuda_versions, accelerators, macos_windows = values
+    return (f"{action} {reason} command={command or '-'} sha={sha or '-'} backends={backends or '-'} "
+            f"cuda-versions={cuda_versions or '-'} accelerators={str(accelerators).lower()} "
+            f"macos-windows={str(macos_windows).lower()}")
 
 
 def main():
@@ -362,11 +527,18 @@ def main():
     for name, ev, api_answers, changes, expected, expected_calls in CASES:
         api = test_requests.Fixtures(copy.deepcopy(api_answers))
         result = test_requests.decide(ev, {**SETTINGS, **changes}, api, NOW)
-        actual = (result["action"], result["reason"], result["command"], result["sha"], result["cuda"],
-                  result["accelerators"], result["macos_windows"])
+        actual = (result["action"], result["reason"], result["command"], result["sha"], result["backends"],
+                  result["cuda_versions"], result["accelerators"], result["macos_windows"])
         ok = actual == expected
         if result["action"] == "accept":
             ok = ok and result["sha"] in result["reply"]
+        if result["action"] == "accept" and result["command"] == "gpu" and api_answers["files"]:
+            # Every accepted GPU reply names a changed file.
+            ok = ok and any(f"`{file['filename']}`" in result["reply"]
+                            or f"`{file.get('previous_filename')}`" in result["reply"]
+                            for file in api_answers["files"])
+        if result["reason"] == "no-gpu-changes":
+            ok = ok and "`/gpu-tests all`" in result["reply"]
         if result["action"] == "ignore":
             ok = ok and not result["reply"]
         if expected_calls is not None:
@@ -379,6 +551,7 @@ def main():
               + (f"\n     reply: {result['reply']}" if result["reply"] else ""))
     results += [api_error_annotation(), permission_not_found()]
     results += [command_case(*case) for case in COMMAND_CASES]
+    results += [compat_case(*case) for case in COMPAT_CASES]
     print(f"{sum(results)} of {len(results)} cases match")
     return 0 if all(results) else 1
 

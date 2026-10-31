@@ -45,14 +45,36 @@ CI runs in three tiers:
   request's author can ask on their own pull request once the light checks have run on it.
   Requests by anyone other than a maintainer run the Linux jobs only. The result appears as
   the `cpu-tests` status and a comment.
-- **The GPU tests** run only on request: a maintainer with write access comments `/gpu-tests`,
-  or `/gpu-tests cuda=<major.minor>`. The CUDA build runs first. The GPU job then waits until a
-  maintainer approves it in the `gpu-tests` environment, and the result appears as the
-  `gpu-tests` status and a comment.
+- **The GPU tests** run only on request: a maintainer with write access comments
+  `/gpu-tests [cuda|opencl|all] [cuda=<major.minor>]`.
+  - `/gpu-tests` alone lets the pull request's changed files choose. Changes to
+    `src/backend/cuda/`, `include/af/cuda.h`, `test/cuda.cu` or CUDA's CMake helpers test CUDA;
+    changes to `src/backend/opencl/`, `include/af/opencl.h`, the OpenCL interop tests or
+    OpenCL's CMake helpers test OpenCL. Anything shared, such as `src/backend/common/`,
+    `src/api/`, `include/`, `test/`, CMake files and `vcpkg.json`, tests both. Markdown,
+    `docs/`, `.github/`, the CPU and oneAPI backends and `examples/` test nothing: the reply
+    says so and nothing starts. `/gpu-tests all` runs the tests anyway.
+  - `/gpu-tests cuda`, `/gpu-tests opencl` and `/gpu-tests all` choose the backends directly.
+  - CUDA is tested once for each version in the repository variable `AF_CI_CUDA_VERSIONS`
+    (for example `12.9 13.4`), or with CUDA 12.9 when it is not set. `cuda=13.4` tests
+    that one version instead: `/gpu-tests cuda=13.4` tests CUDA 13.4 only, and
+    `/gpu-tests all cuda=13.4` tests CUDA 13.4 and OpenCL.
+
+  The reply says what runs and which changed file chose it. Each CUDA version, and OpenCL,
+  is a separate leg: it is built on a standard runner and then tested on its own GPU
+  runner, so a failed build stops only its own leg. One approval in the `gpu-tests`
+  environment covers every leg of a request, and a maintainer can give it while the builds
+  run. The result appears as the `gpu-tests` status and a comment that lists each leg's
+  passed and failed tests. A GPU runner (an NVIDIA T4) costs about 5 cents a minute, and
+  each leg uses it for roughly 10 to 15 minutes. A plain `/gpu-tests` on a CUDA change
+  therefore costs well under a dollar, and `/gpu-tests all` with two CUDA versions costs
+  about three times that. The builds run on standard runners, which cost nothing for a
+  public repository.
 
 Requests test the exact commit that is the pull request's head at that moment, with the CI
 scripts from `master`. Maintainers can also start the "CPU tests" or "GPU tests" workflow by
-hand with a commit SHA. `/cpu-tests` also uses the CMake presets from `master`, while the merge
+hand with a commit SHA. The GPU tests are off until the repository variable `AF_CI_GPU_TESTS`
+is `true` and `AF_CI_GPU_RUNNER` names the GPU runners' label. `/cpu-tests` also uses the CMake presets from `master`, while the merge
 queue uses the pull request's own, so a change to `CMakePresets.json` is really tested in the
 merge queue.
 
