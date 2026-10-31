@@ -230,6 +230,20 @@ case $job in
     ls -l "$gpu_build.tar.zst"
     ;;
   linux-cuda-gpu-test)
+    # A driver older than the toolkit can't load the PTX that ArrayFire's JIT makes;
+    # NVIDIA's forward-compatibility package brings a newer CUDA driver library for
+    # data-center GPUs such as the T4.
+    compat=$(nvidia-smi | "$scripts/cuda-compat.sh" "$cuda_version")
+    read -r mode driver_cuda <<< "$compat"
+    driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+    if [[ $mode == compat ]]; then
+      echo "Driver $driver supports CUDA $driver_cuda, older than CUDA $cuda_version:" \
+        "compat, with NVIDIA's forward-compatibility package cuda-compat-${cuda_version//./-}"
+      apt-get install -y -q --no-install-recommends "cuda-compat-${cuda_version//./-}"
+      export LD_LIBRARY_PATH=/usr/local/cuda-$cuda_version/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    else
+      echo "Driver $driver supports CUDA $driver_cuda, enough for CUDA $cuda_version: native"
+    fi
     [[ -d $gpu_build ]] || tar -C "$source" --zstd -xf "$gpu_build.tar.zst"
     OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$gpu_build" \
       --timeout 900 --output-on-failure --no-tests=error \
