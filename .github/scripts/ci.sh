@@ -5,9 +5,10 @@
 #
 # A job builds and tests the source tree in AF_CI_SOURCE_DIR (default: this
 # repository) with this repository's scripts and CI settings, so it can test any
-# commit. For the linux-cuda-gpu-* jobs, AF_CI_CUDA_VERSION (default 12.9) and
-# AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) select the toolkit and the GPU
-# architectures. A *-gpu-build job builds the tests into an archive, and its
+# commit. AF_CI_CUDA_VERSION (default 12.9) selects the CUDA toolkit of the
+# linux-cuda* jobs, and AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) the GPU
+# architectures of linux-cuda-gpu-build.
+# A *-gpu-build job builds the tests into an archive, and its
 # *-gpu-test job runs them with the host's GPU (docker run --gpus all), with only
 # the libraries they need. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
 # tree's tracked files without .git instead of mounting the tree itself.
@@ -32,7 +33,7 @@ linux-clang-openblas          ubuntu:24.04  --compiler clang --blas openblas
 linux-icx-mkl                 ubuntu:24.04  --compiler icx --blas mkl
 linux-gcc-openblas-floor      ubuntu:22.04  --compiler gcc --blas openblas --cmake $floor_cmake
 linux-gcc-openblas-next       ubuntu:26.04  --compiler gcc --blas openblas
-linux-cuda                    ubuntu:24.04  --compiler gcc --cuda 12.9
+linux-cuda                    ubuntu:24.04  --compiler gcc --cuda $cuda_version
 linux-opencl                  ubuntu:24.04  --compiler gcc --blas openblas --opencl
 linux-oneapi                  ubuntu:24.04  --compiler icx --blas mkl --opencl --oneapi 2025.3
 linux-cuda-gpu-build          ubuntu:24.04  --compiler gcc --cuda $cuda_version
@@ -144,8 +145,7 @@ if [[ -n $docker ]]; then
   mounts=(-v "$root:/src")
   script=.github/scripts/ci.sh
   if [[ $job == *-gpu-* || $source != "$root" ]]; then
-    mounts=(-v "$root:/ci:ro" -v "$source:/src" -e AF_CI_SOURCE_DIR=/src
-            -e AF_CI_CUDA_VERSION -e AF_CI_CUDA_ARCHITECTURES)
+    mounts=(-v "$root:/ci:ro" -v "$source:/src" -e AF_CI_SOURCE_DIR=/src)
     script=/ci/.github/scripts/ci.sh
     [[ $job == *-test ]] && mounts+=(--gpus all -e "NVIDIA_DRIVER_CAPABILITIES=compute,utility")
   fi
@@ -153,7 +153,7 @@ if [[ -n $docker ]]; then
   exec docker run --rm ${AF_CI_DOCKER_ARGS:-} "${mounts[@]}" ${lint_diff[@]+"${lint_diff[@]}"} -w /src \
     -v "$ccache:/ccache" -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE \
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
-    -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE \
+    -e CMAKE_BUILD_PARALLEL_LEVEL -e AF_LINT_BASE -e AF_CI_CUDA_VERSION -e AF_CI_CUDA_ARCHITECTURES \
     "$image" bash -c '"$1" "$2"; rc=$?
       chown -R "$3" build docs/details/examples.dox ${4:+/ccache} 2> /dev/null; exit $rc' \
     bash "$script" "$job" "$(id -u):$(id -g)" "${AF_CI_CCACHE_DIR:-}"
@@ -230,6 +230,16 @@ case $job in
     for test in .github/scripts/*-test.py; do
       python3 "$test"
     done
+    ;;
+  linux-cuda)
+    # The build compiles for an explicit list that includes Blackwell (the
+    # ci-linux-cuda preset). check-cuda-release.sh then checks what users and the
+    # installers get instead: the default architecture list and the bundled CUDA
+    # libraries. Both run, and the job fails if either failed.
+    status=0
+    cmake --workflow --preset ci-linux-cuda || status=$?
+    "$scripts/check-cuda-release.sh" "$source" "$source/build/ci-linux-cuda-release" || status=1
+    exit "$status"
     ;;
   linux-cuda-gpu-build|linux-opencl-gpu-build)
     settings=(-C "$scripts/${job%-build}.cmake")

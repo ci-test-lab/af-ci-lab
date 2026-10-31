@@ -1,6 +1,9 @@
 name: CPU tests
 
-# The CPU builds and tests, plus the compile-only CUDA, OpenCL and oneAPI builds.
+# The CPU builds and tests, plus the compile-only accelerator builds: CUDA for
+# each version in AF_CI_CUDA_VERSIONS (with Blackwell targets and checks of the
+# default architecture list and the CUDA libraries the installers bundle), OpenCL
+# and oneAPI.
 # The CPU tests run in the merge queue and on pushes to master; a pull request
 # gets them with a /cpu-tests comment (test-requests.yml), and anyone with write
 # access can run this workflow for a commit. The accelerator builds run on pushes
@@ -189,22 +192,53 @@ jobs:
           path: ${{ env.UNDER_TEST }}build/ci-windows-msvc-openblas/junit.xml
           if-no-files-found: ignore
 
-  # Named without the matrix: GitHub never expands the matrix in a skipped job's
-  # name, which showed up as a check named "matrix.job", and appends each leg's
-  # values to a fixed name, as in "accelerators (linux-cuda)".
-  accelerators:
-    name: accelerators
+  # The accelerator builds' legs: a linux-cuda leg for each CUDA version in the
+  # repository variable AF_CI_CUDA_VERSIONS (default 12.9), plus linux-opencl and
+  # linux-oneapi.
+  accelerator-legs:
     if: >-
       vars.AF_CI_ACCELERATOR_BUILDS == 'true' &&
       (github.event_name == 'push' || inputs.accelerators)
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.job == 'linux-oneapi' && 150 || matrix.job == 'linux-cuda' && 90 || 60 }}
+    timeout-minutes: 5
+    outputs:
+      linux: ${{ steps.legs.outputs.linux }}
+      cuda: ${{ steps.legs.outputs.cuda }}
+    steps:
+      - id: legs
+        name: List the legs
+        env:
+          CUDA_VERSIONS: ${{ vars.AF_CI_CUDA_VERSIONS || '12.9' }}
+        run: |
+          versions=()
+          for version in $CUDA_VERSIONS; do
+            [[ $version =~ ^[0-9]+\.[0-9]+$ ]] ||
+              { echo "::error::AF_CI_CUDA_VERSIONS must list versions like 12.9 13.4, not '$CUDA_VERSIONS'"; exit 1; }
+            versions+=("\"$version\"")
+          done
+          ((${#versions[@]})) || { echo "::error::AF_CI_CUDA_VERSIONS lists no version"; exit 1; }
+          cuda=$(printf '%s\n' "${versions[@]}" | jq -sc unique)
+          linux=$(jq -c 'map({job: "linux-cuda", cuda: .}) + [{job: "linux-opencl"}, {job: "linux-oneapi"}]' <<< "$cuda")
+          echo "cuda=$cuda" >> "$GITHUB_OUTPUT"
+          echo "linux=$linux" >> "$GITHUB_OUTPUT"
+          echo "CUDA versions: $cuda"
+
+  # Named without the matrix: GitHub never expands the matrix in a skipped job's
+  # name, which showed up as a check named "matrix.job", and appends each leg's
+  # values to a fixed name, as in "accelerators (linux-cuda, 12.9)".
+  accelerators:
+    name: accelerators
+    needs: accelerator-legs
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.job == 'linux-oneapi' && 150 || matrix.job == 'linux-cuda' && 120 || 60 }}
     strategy:
       fail-fast: false
       matrix:
-        job: [linux-cuda, linux-opencl, linux-oneapi]
+        include: ${{ fromJSON(needs.accelerator-legs.outputs.linux) }}
     env:
       AF_CI_CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      AF_CI_CUDA_VERSION: ${{ matrix.cuda }}
+      CACHE_NAME: ${{ matrix.job }}${{ matrix.cuda && format('-{0}', matrix.cuda) || '' }}
       CCACHE_MAXSIZE: 1G
       # The heaviest compiles (SYCL) take up to 2.5 GB each; four in parallel fit a
       # 4-vCPU, 16 GB runner.
@@ -219,12 +253,13 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/ccache
-          key: ccache-${{ matrix.job }}-${{ github.sha }}
-          restore-keys: ccache-${{ matrix.job }}-
+          key: ccache-${{ env.CACHE_NAME }}-${{ github.sha }}
+          restore-keys: ccache-${{ env.CACHE_NAME }}-
       - name: Build
         run: .github/scripts/ci.sh --docker ${{ matrix.job }}
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.event_name == 'push'
         with:
           path: build/ccache
-          key: ccache-${{ matrix.job }}-${{ github.sha }}
+          key: ccache-${{ env.CACHE_NAME }}-${{ github.sha }}
+

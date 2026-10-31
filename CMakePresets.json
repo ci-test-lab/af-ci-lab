@@ -322,7 +322,7 @@
     {
       "name": "ci-linux-cuda",
       "inherits": "ci-linux",
-      "description": "CUDA backend with GCC, for compute capabilities 7.5 and 8.9. Builds without a GPU",
+      "description": "CUDA backend with GCC. Builds without a GPU, for compute capabilities 7.5, 8.9 and 9.0 through ArrayFire's option and Blackwell's 10.0 and 12.0 through nvcc flags, since the option rejects two-digit majors on master",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "gcc",
         "CMAKE_CXX_COMPILER": "g++",
@@ -330,7 +330,8 @@
         "AF_BUILD_CPU": "OFF",
         "AF_BUILD_CUDA": "ON",
         "AF_WITH_CUDNN": "OFF",
-        "CUDA_architecture_build_targets": "7.5;8.9"
+        "CUDA_architecture_build_targets": "7.5;8.9;9.0",
+        "CMAKE_CUDA_FLAGS": "-gencode=arch=compute_100,code=sm_100 -gencode=arch=compute_120,code=sm_120"
       }
     },
     {
