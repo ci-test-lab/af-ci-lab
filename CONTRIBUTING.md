@@ -40,7 +40,17 @@ CI runs in three tiers:
 - **The CPU tests** (Linux with GCC and Clang, macOS and Windows) run in the merge queue and on
   every push to `master`. A pull request shows them as passing at once ("runs in the merge
   queue") so that it can be queued. To run them on the pull request's current head, comment
-  `/cpu-tests`, or `/cpu-tests all` to add the compile-only CUDA, OpenCL and oneAPI builds.
+  `/cpu-tests`, or `/cpu-tests all` to add the compile-only accelerator builds:
+  - `accelerators (linux-cuda, <version>)` for each CUDA version in `AF_CI_CUDA_VERSIONS`
+    (default 12.9). It builds the CUDA backend for compute capabilities 7.5, 8.9 and 9.0 and
+    for Blackwell's 10.0 and 12.0. Then it configures the backend as users and the
+    installers get it: it compiles one CUDA file with ArrayFire's default architecture
+    list, and checks that every CUDA library an `AF_INSTALL_STANDALONE` installer bundles is
+    there under the name ArrayFire loads it by.
+  - `windows-cuda (<version>)`, the same build with MSVC for compute capability 7.5, and
+    the check of the bundled DLLs;
+  - `accelerators (linux-opencl)` and `accelerators (linux-oneapi)`.
+
   Maintainers with write access and the Claude bot can ask on any pull request. The pull
   request's author can ask on their own pull request once the light checks have run on it.
   Requests by anyone other than a maintainer run the Linux jobs only. The result appears as

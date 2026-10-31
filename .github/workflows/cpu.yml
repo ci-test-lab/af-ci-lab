@@ -1,9 +1,9 @@
 name: CPU tests
 
-# The CPU builds and tests, plus the compile-only accelerator builds: CUDA for
-# each version in AF_CI_CUDA_VERSIONS (with Blackwell targets and checks of the
-# default architecture list and the CUDA libraries the installers bundle), OpenCL
-# and oneAPI.
+# The CPU builds and tests, plus the compile-only accelerator builds: CUDA on
+# Linux (with Blackwell targets and checks of the default architecture list and
+# the CUDA libraries the installers bundle) and on Windows, for each version in
+# AF_CI_CUDA_VERSIONS, and OpenCL and oneAPI on Linux.
 # The CPU tests run in the merge queue and on pushes to master; a pull request
 # gets them with a /cpu-tests comment (test-requests.yml), and anyone with write
 # access can run this workflow for a commit. The accelerator builds run on pushes
@@ -192,9 +192,9 @@ jobs:
           path: ${{ env.UNDER_TEST }}build/ci-windows-msvc-openblas/junit.xml
           if-no-files-found: ignore
 
-  # The accelerator builds' legs: a linux-cuda leg for each CUDA version in the
-  # repository variable AF_CI_CUDA_VERSIONS (default 12.9), plus linux-opencl and
-  # linux-oneapi.
+  # The accelerator builds' legs: a linux-cuda and a windows-cuda leg for each CUDA
+  # version in the repository variable AF_CI_CUDA_VERSIONS (default 12.9), plus
+  # linux-opencl and linux-oneapi.
   accelerator-legs:
     if: >-
       vars.AF_CI_ACCELERATOR_BUILDS == 'true' &&
@@ -263,3 +263,49 @@ jobs:
           path: build/ccache
           key: ccache-${{ env.CACHE_NAME }}-${{ github.sha }}
 
+  # Compile only, like linux-cuda: GitHub's Windows GPU runner is old and costly.
+  # Like the Windows CPU job, it builds on the runner itself, so a request runs it
+  # only when the CPU tests' macOS and Windows jobs run. It uses the CPU job's vcpkg
+  # cache without saving one, Ninja (as on Linux) in Visual Studio's x64 developer
+  # environment, and NVIDIA's network installer with only the subpackages the build
+  # needs. The toolkit isn't cached: each version takes gigabytes of the
+  # repository's 10 GB of caches, which the vcpkg and ccache caches already use.
+  windows-cuda:
+    name: windows-cuda
+    needs: accelerator-legs
+    if: ${{ !inputs.sha || inputs.macos-windows }}
+    runs-on: windows-2022
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ${{ fromJSON(needs.accelerator-legs.outputs.cuda) }}
+    env:
+      AF_CI_CUDA_VERSION: ${{ matrix.cuda }}
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ vars.AF_CI_BUILD_PARALLEL_LEVEL || 4 }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the commit under test
+        if: env.SHA != ''
+        run: .github/scripts/checkout-commit.sh "$SHA" "$AF_CI_SOURCE_DIR"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}-${{ github.sha }}
+          restore-keys: vcpkg-windows-${{ hashFiles('vcpkg.json', 'CMakeModules/vcpkg/**', '.github/scripts/install-deps-windows.ps1') }}-
+      - name: Install CUDA ${{ matrix.cuda }}
+        shell: pwsh
+        run: .github/scripts/install-cuda-windows.ps1 -Version $env:AF_CI_CUDA_VERSION
+      - name: Set up Visual Studio's x64 developer environment
+        shell: pwsh
+        run: .github/scripts/msvc-env-windows.ps1
+      - name: Build and check the bundled DLLs
+        timeout-minutes: 120
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}\vcpkg
+        run: .github/scripts/ci.sh windows-cuda

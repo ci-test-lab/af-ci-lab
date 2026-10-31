@@ -397,6 +397,33 @@
       }
     },
     {
+      "name": "ci-windows-cuda",
+      "inherits": "ci",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "description": "CUDA backend and its tests with MSVC, Ninja and vcpkg, for compute capability 7.5. Builds without a GPU. Run it in Visual Studio's x64 developer environment, with CUDA_PATH and VCPKG_ROOT set",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_CUDA_COMPILER": "$env{CUDA_PATH}/bin/nvcc.exe",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "AF_BUILD_CPU": "OFF",
+        "AF_BUILD_CUDA": "ON",
+        "AF_BUILD_FORGE": "OFF",
+        "AF_BUILD_EXAMPLES": "OFF",
+        "AF_WITH_CUDNN": "OFF",
+        "CUDA_architecture_build_targets": "7.5",
+        "has_all_warnings_flag": "OFF"
+      },
+      "environment": {
+        "CFLAGS": "/W3",
+        "CXXFLAGS": "/W3"
+      }
+    },
+    {
       "name": "ci-docs",
       "description": "Documentation only. Needs Doxygen",
       "generator": "Ninja",
@@ -451,6 +478,10 @@
       "name": "ci-windows-msvc-openblas",
       "configurePreset": "ci-windows-msvc-openblas",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ci-windows-cuda",
+      "configurePreset": "ci-windows-cuda"
     },
     {
       "name": "ci-docs",
@@ -658,6 +689,19 @@
         {
           "type": "test",
           "name": "ci-windows-msvc-openblas"
+        }
+      ]
+    },
+    {
+      "name": "ci-windows-cuda",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci-windows-cuda"
+        },
+        {
+          "type": "build",
+          "name": "ci-windows-cuda"
         }
       ]
     },

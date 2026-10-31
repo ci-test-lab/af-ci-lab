@@ -7,7 +7,9 @@
 # repository) with this repository's scripts and CI settings, so it can test any
 # commit. AF_CI_CUDA_VERSION (default 12.9) selects the CUDA toolkit of the
 # linux-cuda* jobs, and AF_CI_CUDA_ARCHITECTURES (default 7.5;8.9) the GPU
-# architectures of linux-cuda-gpu-build.
+# architectures of linux-cuda-gpu-build. windows-cuda needs the toolkit installed
+# first (install-cuda-windows.ps1) and Visual Studio's x64 developer environment
+# (msvc-env-windows.ps1).
 # A *-gpu-build job builds the tests into an archive, and its
 # *-gpu-test job runs them with the host's GPU (docker run --gpus all), with only
 # the libraries they need. With AF_CI_CLEAN_EXPORT set, --docker builds a copy of the
@@ -42,6 +44,7 @@ linux-opencl-gpu-build        ubuntu:24.04  --compiler gcc --blas openblas --ope
 linux-opencl-gpu-test         ubuntu:24.04  --runtime --opencl
 macos-arm64-clang-accelerate  -
 windows-msvc-openblas         -
+windows-cuda                  -
 "
 
 usage() {
@@ -239,6 +242,29 @@ case $job in
     status=0
     cmake --workflow --preset ci-linux-cuda || status=$?
     "$scripts/check-cuda-release.sh" "$source" "$source/build/ci-linux-cuda-release" || status=1
+    exit "$status"
+    ;;
+  windows-cuda)
+    cmake --workflow --preset ci-windows-cuda
+    # The CUDA DLLs that the installers bundle (AF_INSTALL_STANDALONE=ON, component
+    # cuda_dependencies), from the toolkit's bin\ or, from CUDA 13 on, bin\x64\.
+    # Only the install rules change, so nothing is rebuilt.
+    build=build/ci-windows-cuda
+    cmake -S . -B "$build" -DAF_INSTALL_STANDALONE=ON > /dev/null
+    prefix=$(mktemp -d) cuda=$(cygpath -u "$CUDA_PATH")
+    status=0
+    cmake --install "$build" --component cuda_dependencies --prefix "$prefix" || status=1
+    for lib in cufft cublas cublasLt cusolver cusparse nvJitLink nvrtc nvrtc-builtins; do
+      bundled=$(cd "$prefix" && find . \( -iname "${lib}64_*.dll" -o -iname "${lib}_*.dll" \) | sed 's|^\./||')
+      toolkit=$(find "$cuda/bin" -maxdepth 2 -iname "${bundled##*/}" 2> /dev/null | head -n 1)
+      if [[ -z $bundled || $bundled == *$'\n'* || -z $toolkit ]]; then
+        printf '%-15s %s\n' "$lib" "MISSING or wrong: '${bundled//$'\n'/ }' (toolkit: '${toolkit:-none}')"
+        status=1
+      else
+        printf '%-15s %-32s from %s\n' "$lib" "$bundled" "$toolkit"
+      fi
+    done
+    rm -rf "$prefix"
     exit "$status"
     ;;
   linux-cuda-gpu-build|linux-opencl-gpu-build)
