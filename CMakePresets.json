@@ -271,7 +271,16 @@
         "AF_BUILD_FORGE": "ON",
         "AF_BUILD_EXAMPLES": "ON",
         "AF_BUILD_DOCS": "OFF",
-        "AF_TEST_WITH_MTX_FILES": "OFF",
+        "AF_TEST_WITH_MTX_FILES": "ON",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_JGD_KOCAY_TREC4": "${sourceDir}/build/${presetName}/extern/matrixmarket/JGD_Kocay/Trec4",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_HB_BCSSTM02": "${sourceDir}/build/${presetName}/extern/matrixmarket/HB/bcsstm02",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_HB_YOUNG4C": "${sourceDir}/build/${presetName}/extern/matrixmarket/HB/young4c",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_LPNETLIB_LPI_VOL1": "${sourceDir}/build/${presetName}/extern/matrixmarket/LPnetlib/lpi_vol1",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_LPNETLIB_LPI_QUAL": "${sourceDir}/build/${presetName}/extern/matrixmarket/LPnetlib/lpi_qual",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_SANDIA_OSCIL_DCOP_12": "${sourceDir}/build/${presetName}/extern/matrixmarket/Sandia/oscil_dcop_12",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_SANDIA_OSCIL_DCOP_42": "${sourceDir}/build/${presetName}/extern/matrixmarket/Sandia/oscil_dcop_42",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_QCD_CONF6_0-4X4-20": "${sourceDir}/build/${presetName}/extern/matrixmarket/QCD/conf6_0-4x4-20",
+        "FETCHCONTENT_SOURCE_DIR_MTXDOWNLOAD_QCD_CONF6_0-4X4-30": "${sourceDir}/build/${presetName}/extern/matrixmarket/QCD/conf6_0-4x4-30",
         "AF_COMPUTE_LIBRARY": "FFTW/LAPACK/BLAS"
       }
     },

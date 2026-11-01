@@ -53,6 +53,8 @@ export DEBIAN_FRONTEND=noninteractive
 packages=(ca-certificates curl git)
 [[ -n $lint ]] && packages+=(python3 python3-venv)
 [[ -n $workflows ]] && packages+=(python3 xz-utils)
+# ci.sh restores the tests' Matrix Market data with check-matrix-data.py before a build.
+[[ -n $compiler ]] && packages+=(python3)
 if [[ -n $compiler || -n $docs ]]; then
   packages+=(build-essential cmake ninja-build libboost-dev)
 fi

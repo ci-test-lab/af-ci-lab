@@ -13,5 +13,6 @@ set(AF_BUILD_UNIFIED OFF CACHE BOOL "")
 set(AF_BUILD_FORGE OFF CACHE BOOL "")
 set(AF_BUILD_EXAMPLES OFF CACHE BOOL "")
 set(AF_BUILD_DOCS OFF CACHE BOOL "")
-set(AF_TEST_WITH_MTX_FILES OFF CACHE BOOL "")
+# The Matrix Market tests, with the bundled data that ci.sh restores into the build tree.
+include("${CMAKE_CURRENT_LIST_DIR}/matrixmarket.cmake")
 set(AF_COMPUTE_LIBRARY "FFTW/LAPACK/BLAS" CACHE STRING "")

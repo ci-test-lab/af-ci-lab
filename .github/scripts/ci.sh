@@ -188,6 +188,19 @@ if [[ $source != "$root" && $job != *-gpu-* ]]; then
 fi
 cd "$source"
 
+# The tests' Matrix Market data, verified against its manifest and restored into the
+# build tree before the configure; the CI configurations point the tests' download at it
+# (matrixmarket.cmake and the "ci" preset). Windows' python3 may be a store stub.
+case $job in
+  lint|docs|workflows|*-gpu-test) ;;
+  *)
+    python=python3
+    "$python" -c '' 2> /dev/null || python=python
+    if [[ $job == *-gpu-build ]]; then build_dir=$gpu_build; else build_dir=$source/build/ci-$job; fi
+    "$python" "$scripts/check-matrix-data.py" "$source" "$build_dir"
+    ;;
+esac
+
 # Runs the tests of a *-gpu-build archive, unpacked at the path it was built at.
 gpu_tests() {
   [[ -d $gpu_build ]] || tar -C "$source" --zstd -xf "$gpu_build.tar.zst"
@@ -219,8 +232,8 @@ case $job in
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
       -DAF_BUILD_CPU=ON -DAF_BUILD_CUDA=OFF -DAF_BUILD_OPENCL=OFF \
       -DAF_BUILD_ONEAPI=OFF -DAF_BUILD_UNIFIED=OFF -DAF_BUILD_FORGE=ON \
-      -DAF_BUILD_EXAMPLES=ON -DAF_BUILD_DOCS=OFF -DAF_TEST_WITH_MTX_FILES=OFF \
-      -DAF_COMPUTE_LIBRARY=FFTW/LAPACK/BLAS
+      -DAF_BUILD_EXAMPLES=ON -DAF_BUILD_DOCS=OFF -DAF_COMPUTE_LIBRARY=FFTW/LAPACK/BLAS \
+      -C "$scripts/matrixmarket.cmake"
     "/opt/cmake-$floor_cmake/bin/cmake" --build "$build"
     # The distribution's ctest runs the same tests and can write JUnit.
     OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 ctest --test-dir "$build" \
@@ -277,7 +290,8 @@ case $job in
     # programs, shared libraries, CTest files and test data.
     (cd "$source" && find "${gpu_build#"$source/"}" \( -name CMakeFiles -o -name .git \) -prune -o \
       \( -name CTestTestfile.cmake -o -name '*.so*' -o -path '*/test/*' -type f -perm -u+x \
-         -o -path '*/extern/af_test_data-src/*' \) \( -type f -o -type l \) -print) |
+         -o -path '*/extern/af_test_data-src/*' -o -path '*/extern/matrixmarket/*' \) \
+      \( -type f -o -type l \) -print) |
       tar -C "$source" --zstd -cf "$gpu_build.tar.zst" -T -
     ls -l "$gpu_build.tar.zst"
     ;;

@@ -101,6 +101,12 @@ Docker, a Linux job runs in the same Ubuntu image that CI uses:
 To test another checkout with this one's scripts and CI settings, set `AF_CI_SOURCE_DIR` to
 its directory.
 
+The sparse tests read Matrix Market files from the SuiteSparse collection, which refuses CI's
+downloads. `ci.sh` checks the copies bundled in `.github/fixtures` and restores them into the
+build tree before every build, and the CI presets point the tests' download at them. To build
+a `ci-*` preset without `ci.sh`, run
+`python3 .github/scripts/check-matrix-data.py . build/<preset>` first.
+
 The build tree goes to `build/<preset>` and test results to `build/<preset>/junit.xml`. With
 `--docker`, `ci.sh` picks the build parallelism from the memory the container can use and
 prints its choice; set `CMAKE_BUILD_PARALLEL_LEVEL` to choose it yourself.
