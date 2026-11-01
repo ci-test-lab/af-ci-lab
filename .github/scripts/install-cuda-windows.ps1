@@ -2,7 +2,10 @@
 # URL and SHA-256, with only the subpackages that ArrayFire's CUDA backend and its
 # tests need to build. The names are NVIDIA's silent-install subpackage names
 # ("Possible Subpackage Names" in the CUDA Installation Guide for Microsoft
-# Windows); from CUDA 13.2 on, nvcc no longer includes crt and nvvm.
+# Windows). From CUDA 13.0 on, nvcc no longer includes crt (the headers such as
+# crt/host_config.h) and nvvm (cicc): NVIDIA's redistrib_<version>.json lists
+# cuda_crt and libnvvm apart from cuda_nvcc, and the installers carry crt_<version>
+# and nvvm_<version> packages, though the guides list them only from 13.2 on.
 #
 # The toolkit goes to its default place, C:\Program Files\NVIDIA GPU Computing
 # Toolkit\CUDA\v<version>. Under GitHub Actions, CUDA_PATH and the toolkit's bin
@@ -30,7 +33,7 @@ $installers = @{
 $subpackages = @('nvcc', 'cudart', 'thrust', 'cublas', 'cublas_dev', 'cufft', 'cufft_dev',
                  'cusolver', 'cusolver_dev', 'cusparse', 'cusparse_dev', 'nvrtc', 'nvrtc_dev',
                  'nvjitlink')
-if ([version]$Version -ge [version]'13.2') { $subpackages += @('crt', 'nvvm') }
+if ([version]$Version -ge [version]'13.0') { $subpackages += @('crt', 'nvvm') }
 
 $pin = $installers[$Version]
 if (-not $pin) {
